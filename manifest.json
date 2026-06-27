@@ -1,0 +1,11 @@
+{
+  "id": "time-tracker-invoicing",
+  "name": "Time Tracker & Invoicing",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Track billable time against notes and projects, aggregate by client, and generate invoices in markdown. Free time tracking plus license-gated invoicing. Fully local.",
+  "author": "Time Tracker & Invoicing",
+  "authorUrl": "https://example.com",
+  "fundingUrl": "https://example.com/buy",
+  "isDesktopOnly": false
+}
