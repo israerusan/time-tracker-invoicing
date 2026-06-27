@@ -52,9 +52,18 @@ Plus a ribbon **clock** icon to toggle tracking.
 
 ## Settings
 
-Default hourly rate, currency, hours rounding, client/project frontmatter property names, default client, business name/address/email, and invoice folder. License key + validation endpoint live under **License**.
+Default hourly rate, currency, hours rounding, client/project frontmatter property names, and default client (all free). Business name/address/email and invoice folder are premium (invoice-only) and locked until licensed. License key lives under **License**.
 
-> License validation is **stubbed** for development (any key starting with `PREMIUM-` or ≥16 chars validates). Real billing via **Lemon Squeezy / Gumroad** is a clean `TODO(billing)` in `src/licenseManager.ts`.
+> Keys are verified **offline with Ed25519 signatures** ([tweetnacl](https://www.npmjs.com/package/tweetnacl)) — no account, server, or network call, keeping the plugin 100% local. A key is `base64url(payload).base64url(signature)`, verified against the public key in `src/license/publicKey.ts`.
+
+**Selling keys (author workflow):**
+
+```bash
+node scripts/keygen.mjs                 # one-time: create keypair
+npm run license:generate -- buyer@email.com   # after a sale: mint a key
+```
+
+> Billing/delivery (payment + emailing the key) is handled out-of-band by **Lemon Squeezy / Gumroad** — see the `TODO(billing)` in `src/license/LicenseManager.ts`.
 
 ---
 
@@ -62,8 +71,10 @@ Default hourly rate, currency, hours rounding, client/project frontmatter proper
 
 ```bash
 npm install
-npm run build      # type-checks then bundles to main.js
+npm run build      # bundles to main.js
 npm run dev        # watch mode
+npm run typecheck  # tsc --noEmit
+npm test           # offline license verification tests
 ```
 
 `npm run build` produces `main.js` next to `manifest.json` and `styles.css`.
@@ -90,15 +101,28 @@ time-tracker-invoicing/
 ├── tsconfig.json
 ├── esbuild.config.mjs
 ├── styles.css
+├── .github/workflows/
+│   └── release.yml        # tag-driven GitHub release (build + attach assets)
+├── scripts/
+│   ├── keygen.mjs         # one-time Ed25519 keypair generator (author)
+│   ├── generate-license.mjs   # mint a customer key (author)
+│   └── customer-license-template.txt
+├── tests/
+│   └── license.test.mjs   # offline license sign/verify round-trip
 └── src/
     ├── main.ts            # entry, commands, status bar, persistence
     ├── settings.ts        # settings tab
-    ├── licenseManager.ts  # open-core license gate (stubbed network call)
+    ├── license/
+    │   ├── LicenseManager.ts  # offline Ed25519 verification
+    │   └── publicKey.ts       # embedded public key
+    ├── types/tweetnacl.d.ts   # minimal tweetnacl type shim
     ├── timeStore.ts       # entries, active timer, aggregation
     ├── invoice.ts         # invoice markdown generation + PDF stub (premium)
     └── types.ts           # shared interfaces & defaults
 ```
 
+> **Reference:** the licensing approach, settings-tab patterns, build/test setup, and project layout are adapted from the [Vault Spotlight](https://github.com/) plugin — see "Borrowed from Vault Spotlight" notes in the repo.
+
 ## License
 
-MIT (plugin source). Premium feature access is governed by a commercial license key.
+MIT (plugin source). Premium feature access is governed by a signed license key.

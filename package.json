@@ -1,31 +1,34 @@
 {
-  "name": "time-tracker-invoicing",
-  "version": "1.0.0",
-  "description": "Track billable time against notes/projects and generate invoices — for freelancers and consultants. Fully local.",
-  "main": "main.js",
-  "scripts": {
-    "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "version": "node version-bump.mjs && git add manifest.json versions.json"
-  },
-  "keywords": [
-    "obsidian",
-    "obsidian-plugin",
-    "time-tracking",
-    "invoicing",
-    "freelance",
-    "billable"
-  ],
-  "author": "Time Tracker & Invoicing",
-  "license": "MIT",
-  "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "builtin-modules": "^3.3.0",
-    "esbuild": "^0.20.0",
-    "obsidian": "^1.5.0",
-    "tslib": "^2.6.2",
-    "typescript": "^5.4.0"
-  }
+	"name": "time-tracker-invoicing",
+	"version": "1.0.0",
+	"description": "Track billable time against notes/projects and generate invoices — for freelancers and consultants. Fully local.",
+	"main": "main.js",
+	"type": "module",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "node esbuild.config.mjs production",
+		"typecheck": "tsc -noEmit -skipLibCheck",
+		"test": "node tests/license.test.mjs",
+		"license:generate": "node scripts/generate-license.mjs",
+		"version": "node version-bump.mjs && git add manifest.json versions.json"
+	},
+	"keywords": [
+		"obsidian",
+		"plugin",
+		"time-tracking",
+		"invoicing",
+		"freelance",
+		"billable"
+	],
+	"author": "iavil",
+	"license": "MIT",
+	"devDependencies": {
+		"@types/node": "^24.0.0",
+		"esbuild": "^0.28.1",
+		"obsidian": "1.7.2",
+		"typescript": "^5.8.3"
+	},
+	"dependencies": {
+		"tweetnacl": "^1.0.3"
+	}
 }

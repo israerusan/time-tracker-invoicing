@@ -33,9 +33,11 @@ export interface InvoiceLineItem {
 }
 
 export interface PluginSettings {
-  /** License */
+  /** License (offline Ed25519 — see src/license/LicenseManager.ts) */
   licenseKey: string;
-  licenseEndpoint: string;
+  isPro: boolean;
+  licenseEmail: string;
+  purchaseUrl: string;
 
   /** Billing defaults */
   defaultHourlyRate: number;
@@ -60,7 +62,9 @@ export interface PluginSettings {
 
 export const DEFAULT_SETTINGS: PluginSettings = {
   licenseKey: "",
-  licenseEndpoint: "https://api.lemonsqueezy.com/v1/licenses/validate",
+  isPro: false,
+  licenseEmail: "",
+  purchaseUrl: "https://example.gumroad.com/l/time-tracker-invoicing",
   defaultHourlyRate: 100,
   currency: "USD",
   clientProperty: "client",

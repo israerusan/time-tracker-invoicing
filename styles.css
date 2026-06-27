@@ -9,12 +9,21 @@
   font-weight: 600;
 }
 
-.tti-settings-status {
-  margin: 8px 0;
+.tti-license-status {
+  margin: 8px 0 16px;
   font-weight: 600;
+}
+
+.tti-license-status a {
+  font-weight: 400;
 }
 
 .tti-muted {
   color: var(--text-muted);
   font-size: 0.85em;
+}
+
+/* Locked premium settings rows (mirrors Vault Spotlight's proSearch pattern) */
+.tti-setting-locked {
+  opacity: 0.55;
 }

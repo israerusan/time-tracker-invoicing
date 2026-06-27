@@ -1,0 +1,20 @@
+Thanks for buying Time Tracker & Invoicing!
+
+Your license key:
+{{LICENSE_KEY}}
+
+How to activate:
+1. Open Obsidian → Settings → Community plugins → Time Tracker & Invoicing
+2. Paste your license key into the License key field
+3. Invoicing & PDF export unlock immediately (offline — no login required)
+
+Premium features:
+- Invoice generation (markdown)
+- PDF export (roadmap)
+
+Free time tracking, aggregation, and the status-bar timer stay available with or
+without a license.
+
+Need help? Reply to this email.
+
+— Time Tracker & Invoicing
