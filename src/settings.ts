@@ -146,40 +146,40 @@ export class TimeTrackerSettingTab extends PluginSettingTab {
 			render(setting);
 		};
 
-		premium("Business name", "Shown as the sender on generated invoices.", (s) =>
+		premium("Business name", "Shown as the sender on generated invoices.", (s) => {
 			s.addText((t) =>
 				t.setValue(this.plugin.settings.businessName).onChange((v) => {
 					this.plugin.settings.businessName = v;
 					void this.plugin.saveAll();
 				})
-			)
-		);
+			);
+		});
 
-		premium("Business address", "Shown under your business name.", (s) =>
+		premium("Business address", "Shown under your business name.", (s) => {
 			s.addTextArea((t) =>
 				t.setValue(this.plugin.settings.businessAddress).onChange((v) => {
 					this.plugin.settings.businessAddress = v;
 					void this.plugin.saveAll();
 				})
-			)
-		);
+			);
+		});
 
-		premium("Business email", "Contact email printed on invoices.", (s) =>
+		premium("Business email", "Contact email printed on invoices.", (s) => {
 			s.addText((t) =>
 				t.setValue(this.plugin.settings.businessEmail).onChange((v) => {
 					this.plugin.settings.businessEmail = v;
 					void this.plugin.saveAll();
 				})
-			)
-		);
+			);
+		});
 
-		premium("Invoice folder", "Vault folder where generated invoices are saved.", (s) =>
+		premium("Invoice folder", "Vault folder where generated invoices are saved.", (s) => {
 			s.addText((t) =>
 				t.setValue(this.plugin.settings.invoiceFolder).onChange((v) => {
 					this.plugin.settings.invoiceFolder = v.trim() || "Invoices";
 					void this.plugin.saveAll();
 				})
-			)
-		);
+			);
+		});
 	}
 }
