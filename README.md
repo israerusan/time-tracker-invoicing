@@ -2,7 +2,7 @@
 
 Track billable time against your notes and projects, aggregate it by client, and generate invoices — built for freelancers and consultants who live in Obsidian. **Fully local: no external API, no account, your data stays in your vault.**
 
-> **Open-core / one-time purchase.** Time tracking is free forever in the Lite tier. Invoicing & PDF export unlock with a one-time license — **~$29–39 (one-time)**.
+> **Open-core / one-time purchase.** Time tracking is free forever in the Lite tier. Invoicing & PDF export unlock with a one-time license — **$29 one-time** — [buy here](https://buymeacoffee.com/vaultspotlight/e/560212).
 
 ---
 

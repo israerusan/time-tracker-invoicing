@@ -1,6 +1,6 @@
 {
 	"name": "time-tracker-invoicing",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Track billable time against notes/projects and generate invoices — for freelancers and consultants. Fully local.",
 	"main": "main.js",
 	"type": "module",

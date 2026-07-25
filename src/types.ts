@@ -64,7 +64,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://example.gumroad.com/l/time-tracker-invoicing",
+  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560212",
   defaultHourlyRate: 100,
   currency: "USD",
   clientProperty: "client",

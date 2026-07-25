@@ -2278,7 +2278,7 @@ var DEFAULT_SETTINGS = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://example.gumroad.com/l/time-tracker-invoicing",
+  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560212",
   defaultHourlyRate: 100,
   currency: "USD",
   clientProperty: "client",
@@ -2654,46 +2654,38 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
       }
       render(setting);
     };
-    premium(
-      "Business name",
-      "Shown as the sender on generated invoices.",
-      (s) => s.addText(
+    premium("Business name", "Shown as the sender on generated invoices.", (s) => {
+      s.addText(
         (t) => t.setValue(this.plugin.settings.businessName).onChange((v) => {
           this.plugin.settings.businessName = v;
           void this.plugin.saveAll();
         })
-      )
-    );
-    premium(
-      "Business address",
-      "Shown under your business name.",
-      (s) => s.addTextArea(
+      );
+    });
+    premium("Business address", "Shown under your business name.", (s) => {
+      s.addTextArea(
         (t) => t.setValue(this.plugin.settings.businessAddress).onChange((v) => {
           this.plugin.settings.businessAddress = v;
           void this.plugin.saveAll();
         })
-      )
-    );
-    premium(
-      "Business email",
-      "Contact email printed on invoices.",
-      (s) => s.addText(
+      );
+    });
+    premium("Business email", "Contact email printed on invoices.", (s) => {
+      s.addText(
         (t) => t.setValue(this.plugin.settings.businessEmail).onChange((v) => {
           this.plugin.settings.businessEmail = v;
           void this.plugin.saveAll();
         })
-      )
-    );
-    premium(
-      "Invoice folder",
-      "Vault folder where generated invoices are saved.",
-      (s) => s.addText(
+      );
+    });
+    premium("Invoice folder", "Vault folder where generated invoices are saved.", (s) => {
+      s.addText(
         (t) => t.setValue(this.plugin.settings.invoiceFolder).onChange((v) => {
           this.plugin.settings.invoiceFolder = v.trim() || "Invoices";
           void this.plugin.saveAll();
         })
-      )
-    );
+      );
+    });
   }
 };
 
