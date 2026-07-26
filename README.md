@@ -92,9 +92,11 @@ npm test           # offline license verification tests
 
 `npm run build` produces `main.js` next to `manifest.json` and `styles.css`.
 
-### Install into a vault for testing
+### Install
 
-Copy `main.js`, `manifest.json`, and `styles.css` into:
+**Community plugins (recommended):** open **Settings → Community plugins**, search **Time Tracker and Invoicing**, and install it — one click, auto-updates.
+
+**Manual install** — copy `main.js`, `manifest.json`, and `styles.css` into:
 
 ```
 <your-vault>/.obsidian/plugins/time-tracker-invoicing/
