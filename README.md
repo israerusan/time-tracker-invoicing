@@ -1,6 +1,13 @@
 # Time Tracker & Invoicing
 
+**Stop leaking billable hours — clock time on the notes you're already working in, then turn it into client-ready invoices without leaving Obsidian.**
+
 Track billable time against your notes and projects, aggregate it by client, and generate invoices — built for freelancers and consultants who live in Obsidian. **Fully local: no external API, no account, your data stays in your vault.**
+
+<!-- SCREENSHOT SLOT — drop a real capture here to lift conversions.
+     ![The live status-bar timer running on a note, and a generated client invoice](docs/assets/hero.png)
+     Suggested shot: the running status-bar timer (⏺ 0:12:34 · Acme Co) plus a generated invoice note with line items. Save as docs/assets/hero.png -->
+
 
 > **Open-core / one-time purchase.** Time tracking is free forever in the Lite tier. Invoicing & PDF export unlock with a one-time license — **$29 one-time** — [buy here](https://buymeacoffee.com/vaultspotlight/e/560212).
 
@@ -8,7 +15,7 @@ Track billable time against your notes and projects, aggregate it by client, and
 
 ## Lite vs. Premium
 
-| Feature | Lite (free) | Premium (~$29–39 one-time) |
+| Feature | Lite (free) | Premium ($29 one-time) |
 | --- | :---: | :---: |
 | Start/stop tracking on the active note | ✅ | ✅ |
 | Live timer in the status bar | ✅ | ✅ |
@@ -17,7 +24,15 @@ Track billable time against your notes and projects, aggregate it by client, and
 | **Invoice generation (markdown)** | — | ✅ |
 | **PDF export** | — | ✅ (stub today) |
 
-All **time tracking is free**. **Invoicing/PDF export is gated** behind the license check (`LicenseManager.isPremium()`).
+All **time tracking is free** — no trial, no expiry. **Invoicing and PDF export** are the only paid features, gated behind the license check (`LicenseManager.isPremium()`).
+
+Purchase: [Buy Me a Coffee — Time Tracker & Invoicing Premium](https://buymeacoffee.com/vaultspotlight/e/560212). License keys are verified **offline** (Ed25519) — no account, server, or subscription.
+
+**Activate in three steps:**
+
+1. Buy the one-time Premium license from the link above.
+2. Your license key is emailed to you **automatically, within seconds** — delivery is fully automated, no waiting.
+3. Paste it into the plugin's **License** setting — Premium unlocks instantly, verified offline.
 
 ---
 
@@ -62,8 +77,6 @@ Default hourly rate, currency, hours rounding, client/project frontmatter proper
 node scripts/keygen.mjs                 # one-time: create keypair
 npm run license:generate -- buyer@email.com   # after a sale: mint a key
 ```
-
-> Billing/delivery (payment + emailing the key) is handled out-of-band by **Lemon Squeezy / Gumroad** — see the `TODO(billing)` in `src/license/LicenseManager.ts`.
 
 ---
 
@@ -121,7 +134,7 @@ time-tracker-invoicing/
     └── types.ts           # shared interfaces & defaults
 ```
 
-> **Reference:** the licensing approach, settings-tab patterns, build/test setup, and project layout are adapted from the [Vault Spotlight](https://github.com/) plugin — see "Borrowed from Vault Spotlight" notes in the repo.
+> **Reference:** the licensing approach, settings-tab patterns, build/test setup, and project layout are adapted from the [Vault Spotlight](https://github.com/israerusan) plugin — see "Borrowed from Vault Spotlight" notes in the repo.
 
 ## License
 
