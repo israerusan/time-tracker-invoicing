@@ -2686,6 +2686,16 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
         })
       );
     });
+    new import_obsidian2.Setting(containerEl).setName("Feedback").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Bugs and feature requests").setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.").addButton(
+      (button) => button.setButtonText("Report a bug").onClick(() => {
+        window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
+      })
+    ).addButton(
+      (button) => button.setButtonText("Request a feature").onClick(() => {
+        window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement");
+      })
+    );
   }
 };
 

@@ -181,5 +181,22 @@ export class TimeTrackerSettingTab extends PluginSettingTab {
 				})
 			);
 		});
+
+		// ---- Feedback --------------------------------------------------------
+		new Setting(containerEl).setName("Feedback").setHeading();
+
+		new Setting(containerEl)
+			.setName("Bugs and feature requests")
+			.setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.")
+			.addButton((button) =>
+				button.setButtonText("Report a bug").onClick(() => {
+					window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
+				})
+			)
+			.addButton((button) =>
+				button.setButtonText("Request a feature").onClick(() => {
+					window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement");
+				})
+			);
 	}
 }
