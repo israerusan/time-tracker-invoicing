@@ -307,20 +307,23 @@ export class TimeTrackerSettingTab extends PluginSettingTab {
   private renderFeedback(containerEl: HTMLElement): void {
     new Setting(containerEl).setName("Feedback").setHeading();
 
-    new Setting(containerEl)
+    // Rendered as links rather than buttons calling `window.open`. Anchors are
+    // handled by Obsidian on every platform, including mobile, where opening a
+    // browser window from script is not something to rely on.
+    const feedback = new Setting(containerEl)
       .setName("Bugs and feature requests")
-      .setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.")
-      .addButton((button) =>
-        button.setButtonText("Report a bug").onClick(() => {
-          window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
-        })
-      )
-      .addButton((button) =>
-        button.setButtonText("Request a feature").onClick(() => {
-          window.open(
-            "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement"
-          );
-        })
-      );
+      .setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.");
+
+    const links = feedback.controlEl.createDiv({ cls: "tti-feedback-links" });
+    const link = (text: string, href: string): void => {
+      const anchor = links.createEl("a", { text, href });
+      anchor.setAttr("target", "_blank");
+      anchor.setAttr("rel", "noopener");
+    };
+    link("Report a bug", "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
+    link(
+      "Request a feature",
+      "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement"
+    );
   }
 }

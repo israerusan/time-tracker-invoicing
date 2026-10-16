@@ -2239,22 +2239,22 @@ var require_nacl_fast = __commonJS({
         randombytes = fn;
       };
       (function() {
-        var crypto = typeof self !== "undefined" ? self.crypto || self.msCrypto : null;
-        if (crypto && crypto.getRandomValues) {
+        var crypto2 = typeof self !== "undefined" ? self.crypto || self.msCrypto : null;
+        if (crypto2 && crypto2.getRandomValues) {
           var QUOTA = 65536;
           nacl2.setPRNG(function(x, n) {
             var i, v = new Uint8Array(n);
             for (i = 0; i < n; i += QUOTA) {
-              crypto.getRandomValues(v.subarray(i, i + Math.min(n - i, QUOTA)));
+              crypto2.getRandomValues(v.subarray(i, i + Math.min(n - i, QUOTA)));
             }
             for (i = 0; i < n; i++) x[i] = v[i];
             cleanup(v);
           });
         } else if (typeof require !== "undefined") {
-          crypto = require_crypto();
-          if (crypto && crypto.randomBytes) {
+          crypto2 = require_crypto();
+          if (crypto2 && crypto2.randomBytes) {
             nacl2.setPRNG(function(x, n) {
-              var i, v = crypto.randomBytes(n);
+              var i, v = crypto2.randomBytes(n);
               for (i = 0; i < n; i++) x[i] = v[i];
               cleanup(v);
             });
@@ -2346,7 +2346,7 @@ function base64ToBytes(value) {
 // src/core/ids.ts
 function randomToken() {
   const bytes = new Uint8Array(16);
-  const cryptoObj = typeof globalThis !== "undefined" ? globalThis.crypto : void 0;
+  const cryptoObj = typeof crypto !== "undefined" ? crypto : void 0;
   if (cryptoObj == null ? void 0 : cryptoObj.getRandomValues) {
     cryptoObj.getRandomValues(bytes);
   } else {
@@ -3983,6 +3983,15 @@ var InvoiceWriter = class {
     }
     throw new Error("Could not find an unused invoice number. Check the invoice folder.");
   }
+  /**
+   * Where this invoice will be written, decided before anything is written.
+   * The issuance records its intent at these paths first, so a crash during
+   * the write can be reconciled afterwards by asking whether they exist.
+   */
+  plannedPaths(number, client) {
+    const markdownPath = this.markdownPathFor(number, client);
+    return { markdownPath, pdfPath: this.pdfPathFor(markdownPath) };
+  }
   markdownPathFor(number, client) {
     const folder = (0, import_obsidian.normalizePath)(this.settings.invoiceFolder || "Invoices");
     const name = fileNameComponent(`Invoice ${number} - ${client}`, `Invoice ${number}`);
@@ -4281,16 +4290,17 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
   // ----------------------------------------------------------------- feedback
   renderFeedback(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Feedback").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Bugs and feature requests").setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.").addButton(
-      (button) => button.setButtonText("Report a bug").onClick(() => {
-        window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
-      })
-    ).addButton(
-      (button) => button.setButtonText("Request a feature").onClick(() => {
-        window.open(
-          "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement"
-        );
-      })
+    const feedback = new import_obsidian2.Setting(containerEl).setName("Bugs and feature requests").setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.");
+    const links = feedback.controlEl.createDiv({ cls: "tti-feedback-links" });
+    const link = (text, href) => {
+      const anchor = links.createEl("a", { text, href });
+      anchor.setAttr("target", "_blank");
+      anchor.setAttr("rel", "noopener");
+    };
+    link("Report a bug", "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
+    link(
+      "Request a feature",
+      "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement"
     );
   }
 };
@@ -4383,13 +4393,12 @@ function readInvoice(raw) {
   const totalSeconds = finiteNumber(raw.totalSeconds);
   if (!id || !number || client === null || issuedAt === null) return null;
   if (totalMinor === null || totalSeconds === null) return null;
+  if (!Array.isArray(raw.allocations) || raw.allocations.length === 0) return null;
   const allocations = [];
-  if (Array.isArray(raw.allocations)) {
-    for (const a of raw.allocations) {
-      const parsed = readAllocation(a);
-      if (!parsed) return null;
-      allocations.push(parsed);
-    }
+  for (const a of raw.allocations) {
+    const parsed = readAllocation(a);
+    if (!parsed) return null;
+    allocations.push(parsed);
   }
   return {
     ...raw,
@@ -4447,7 +4456,8 @@ function migrate(raw, now) {
       `This vault's time data was written by a newer version of the plugin (schema ${report.fromSchema}). It has been opened read-only so nothing is overwritten. Update the plugin to continue.`
     );
   }
-  const quarantined = Array.isArray(root.quarantined) ? [...root.quarantined] : [];
+  const previouslyQuarantined = Array.isArray(root.quarantined) ? root.quarantined : [];
+  const quarantined = [...previouslyQuarantined];
   const entries = [];
   const seenIds = /* @__PURE__ */ new Set();
   const rawEntries = Array.isArray(root.entries) ? root.entries : [];
@@ -4477,15 +4487,19 @@ function migrate(raw, now) {
   const seenInvoiceIds = /* @__PURE__ */ new Set();
   const rawInvoices = Array.isArray(root.invoices) ? root.invoices : [];
   const entriesById = new Map(entries.map((e) => [e.id, e]));
+  const seenInvoiceNumbers = /* @__PURE__ */ new Set();
   for (const rawInvoice of rawInvoices) {
     const invoice = readInvoice(rawInvoice);
-    if (!invoice || seenInvoiceIds.has(invoice.id) || !allocationsFitEntries(invoice.allocations, entriesById)) {
+    if (!invoice || seenInvoiceIds.has(invoice.id) || // Two records sharing one human-facing number is how a billing dispute
+    // starts; keep the first and set the later one aside.
+    seenInvoiceNumbers.has(invoice.number) || !allocationsFitEntries(invoice.allocations, entriesById)) {
       quarantined.push(rawInvoice);
       report.quarantined += 1;
       report.changed = true;
       continue;
     }
     seenInvoiceIds.add(invoice.id);
+    seenInvoiceNumbers.add(invoice.number);
     invoices.push(invoice);
   }
   let legacyUnknownBefore = finiteNumber(root.legacyUnknownBefore);
@@ -4498,12 +4512,19 @@ function migrate(raw, now) {
       );
     }
   }
+  let pendingIssue = readInvoice(root.pendingIssue);
+  if (pendingIssue && !allocationsFitEntries(pendingIssue.allocations, new Map(entries.map((e) => [e.id, e])))) {
+    quarantined.push(root.pendingIssue);
+    report.quarantined += 1;
+    pendingIssue = null;
+  }
   const data = {
     schemaVersion: report.readOnly ? report.fromSchema : CURRENT_SCHEMA,
     settings: readSettings(root.settings),
     entries,
     activeTimer: readActiveTimer(root.activeTimer),
     invoices,
+    pendingIssue,
     legacyUnknownBefore,
     quarantined
   };
@@ -4518,6 +4539,27 @@ function migrate(raw, now) {
     );
   }
   return { data, report };
+}
+
+// src/core/reconcile.ts
+function resolvePendingIssue(pending, fileExists, plannedPdfPath) {
+  var _a;
+  const markdownPath = pending.markdownPath;
+  const markdownWritten = markdownPath !== null && fileExists(markdownPath);
+  if (!markdownWritten) {
+    return {
+      action: "discard",
+      record: null,
+      message: `Invoice ${pending.number} for ${pending.client} was not finished and no file was written. That time is still available to invoice.`
+    };
+  }
+  const pdfCandidate = (_a = pending.pdfPath) != null ? _a : plannedPdfPath;
+  const pdfPath = pdfCandidate !== null && fileExists(pdfCandidate) ? pdfCandidate : null;
+  return {
+    action: "record",
+    record: { ...pending, pdfPath },
+    message: `Invoice ${pending.number} for ${pending.client} was written but not recorded \u2014 the plugin stopped midway. It has been recorded now, so its hours will not be billed again.`
+  };
 }
 
 // src/ui/modals.ts
@@ -4717,6 +4759,9 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     this.invoices = [];
     this.legacyUnknownBefore = null;
     this.quarantined = [];
+    this.pendingIssue = null;
+    /** Where the pending issuance intended to put its PDF. */
+    this.pendingPdfPath = null;
     /** Set when the data file came from a newer build; nothing is written. */
     this.readOnly = false;
     this.statusBarText = "";
@@ -4803,12 +4848,39 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
       })
     );
     this.addSettingTab(new TimeTrackerSettingTab(this.app, this));
+    this.app.workspace.onLayoutReady(() => void this.reconcilePendingIssue());
+  }
+  /**
+   * Finish, or abandon, an issuance that was interrupted.
+   *
+   * The invoice file is the evidence. If it is there, the client may already
+   * have been sent it, so the invoice is recorded and its hours stay billed.
+   * If it is not, nothing was delivered and the hours go back in the pool.
+   * Either way the user is told, because both outcomes are surprising.
+   */
+  async reconcilePendingIssue() {
+    const pending = this.pendingIssue;
+    if (!pending || this.readOnly) return;
+    const outcome = resolvePendingIssue(
+      pending,
+      (path) => this.app.vault.getAbstractFileByPath(path) !== null,
+      this.pendingPdfPath
+    );
+    this.pendingIssue = null;
+    this.pendingPdfPath = null;
+    if (outcome.action === "record" && outcome.record) {
+      await this.store.addInvoice(outcome.record);
+    } else {
+      await this.saveAll();
+    }
+    new import_obsidian4.Notice(outcome.message, 15e3);
   }
   onunload() {
     this.stopTicker();
     if (this.saveTimer !== null) {
       window.clearTimeout(this.saveTimer);
       this.saveTimer = null;
+      void this.saveAll().catch(() => void 0);
     }
   }
   // ----------------------------------------------------------------------
@@ -4975,21 +5047,7 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
       return;
     }
     const doc = draftToDocument(draft, { number, client, issuedAt, period, settings: this.settings });
-    let written;
-    try {
-      written = await writer.write(doc, {
-        exportPdf: this.settings.exportPdf,
-        pageSize: this.settings.pdfPageSize,
-        createdAt: new Date(issuedAt),
-        creator: `Time Tracker and Invoicing ${this.manifest.version}`
-      });
-    } catch (error) {
-      new import_obsidian4.Notice(
-        `Invoice not created: ${error instanceof Error ? error.message : String(error)}`,
-        1e4
-      );
-      return;
-    }
+    const planned = writer.plannedPaths(number, client);
     const record = {
       id: newInvoiceId(),
       number,
@@ -5003,10 +5061,39 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
       allocations: draft.allocations,
       totalSeconds: draft.totalSeconds,
       totalMinor: draft.totalMinor,
-      markdownPath: written.markdownPath,
-      pdfPath: written.pdfPath,
+      markdownPath: planned.markdownPath,
+      pdfPath: null,
       voided: false
     };
+    this.pendingIssue = record;
+    this.pendingPdfPath = this.settings.exportPdf ? planned.pdfPath : null;
+    try {
+      await this.saveAll();
+    } catch (e) {
+      this.pendingIssue = null;
+      this.pendingPdfPath = null;
+      return;
+    }
+    let written;
+    try {
+      written = await writer.write(doc, {
+        exportPdf: this.settings.exportPdf,
+        pageSize: this.settings.pdfPageSize,
+        createdAt: new Date(issuedAt),
+        creator: `Time Tracker and Invoicing ${this.manifest.version}`
+      });
+    } catch (error) {
+      await this.reconcilePendingIssue();
+      new import_obsidian4.Notice(
+        `Invoice could not be completed: ${error instanceof Error ? error.message : String(error)}`,
+        1e4
+      );
+      return;
+    }
+    record.markdownPath = written.markdownPath;
+    record.pdfPath = written.pdfPath;
+    this.pendingIssue = null;
+    this.pendingPdfPath = null;
     this.settings.invoiceSeq = seq + 1;
     await this.store.addInvoice(record);
     const file = this.app.vault.getAbstractFileByPath(written.markdownPath);
@@ -5115,6 +5202,7 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     this.invoices = data.invoices;
     this.legacyUnknownBefore = data.legacyUnknownBefore;
     this.quarantined = data.quarantined;
+    this.pendingIssue = data.pendingIssue;
     this.readOnly = report.readOnly;
     for (const note of report.notes) {
       new import_obsidian4.Notice(note, 15e3);
@@ -5155,7 +5243,8 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
       activeTimer: this.store ? this.store.getActiveTimer() : this.activeTimer,
       invoices: this.store ? [...this.store.getInvoices()] : this.invoices,
       legacyUnknownBefore: this.legacyUnknownBefore,
-      quarantined: this.quarantined
+      quarantined: this.quarantined,
+      pendingIssue: this.pendingIssue
     };
     try {
       await this.saveData(data);

@@ -146,4 +146,15 @@ export interface PersistedData {
   legacyUnknownBefore: number | null;
   /** Records quarantined by migration because they could not be trusted. */
   quarantined: unknown[];
+  /**
+   * An invoice whose files were being written when the plugin last stopped.
+   *
+   * Writing the files and recording the invoice are two operations and cannot
+   * be made one. Whichever order they run in, a crash between them leaves the
+   * ledger and the vault disagreeing — and the dangerous direction is an
+   * invoice sitting in the vault, already sent, whose hours the plugin still
+   * believes are unbilled. So the intent is written down first, and on the
+   * next load the vault is asked which way it went.
+   */
+  pendingIssue: InvoiceRecord | null;
 }

@@ -15,6 +15,7 @@ import { TimeTrackerSettingTab } from "./settings";
 import { migrate } from "./core/migrate";
 import { newInvoiceId } from "./core/ids";
 import { buildDraft, draftToDocument } from "./core/invoiceModel";
+import { resolvePendingIssue } from "./core/reconcile";
 import { formatHours, formatMoney, parseRateToMinor } from "./core/money";
 import { BillingPeriod, periodRangeLabel } from "./core/period";
 import {
@@ -38,6 +39,9 @@ export default class TimeTrackerPlugin extends Plugin {
   private invoices: InvoiceRecord[] = [];
   private legacyUnknownBefore: number | null = null;
   private quarantined: unknown[] = [];
+  private pendingIssue: InvoiceRecord | null = null;
+  /** Where the pending issuance intended to put its PDF. */
+  private pendingPdfPath: string | null = null;
   /** Set when the data file came from a newer build; nothing is written. */
   private readOnly = false;
 
@@ -140,13 +144,50 @@ export default class TimeTrackerPlugin extends Plugin {
     );
 
     this.addSettingTab(new TimeTrackerSettingTab(this.app, this));
+
+    // The vault index is not reliable during onload, and reconciliation asks
+    // the vault whether a file exists.
+    this.app.workspace.onLayoutReady(() => void this.reconcilePendingIssue());
+  }
+
+  /**
+   * Finish, or abandon, an issuance that was interrupted.
+   *
+   * The invoice file is the evidence. If it is there, the client may already
+   * have been sent it, so the invoice is recorded and its hours stay billed.
+   * If it is not, nothing was delivered and the hours go back in the pool.
+   * Either way the user is told, because both outcomes are surprising.
+   */
+  private async reconcilePendingIssue(): Promise<void> {
+    const pending = this.pendingIssue;
+    if (!pending || this.readOnly) return;
+
+    const outcome = resolvePendingIssue(
+      pending,
+      (path) => this.app.vault.getAbstractFileByPath(path) !== null,
+      this.pendingPdfPath
+    );
+
+    this.pendingIssue = null;
+    this.pendingPdfPath = null;
+
+    if (outcome.action === "record" && outcome.record) {
+      await this.store.addInvoice(outcome.record);
+    } else {
+      await this.saveAll();
+    }
+    new Notice(outcome.message, 15000);
   }
 
   onunload(): void {
     this.stopTicker();
     if (this.saveTimer !== null) {
+      // A settings edit made in the last 400 ms is still only in memory.
+      // Cancelling the timer without flushing would certainly discard it; this
+      // start is best-effort, since Obsidian does not await plugin unload.
       window.clearTimeout(this.saveTimer);
       this.saveTimer = null;
+      void this.saveAll().catch(() => undefined);
     }
   }
 
@@ -350,25 +391,10 @@ export default class TimeTrackerPlugin extends Plugin {
 
     const doc = draftToDocument(draft, { number, client, issuedAt, period, settings: this.settings });
 
-    let written;
-    try {
-      written = await writer.write(doc, {
-        exportPdf: this.settings.exportPdf,
-        pageSize: this.settings.pdfPageSize,
-        createdAt: new Date(issuedAt),
-        creator: `Time Tracker and Invoicing ${this.manifest.version}`,
-      });
-    } catch (error) {
-      // Nothing was recorded, so the hours remain billable. This is the safe
-      // direction to fail: a missing invoice is recoverable, a ledger that
-      // thinks it billed hours it never billed is not.
-      new Notice(
-        `Invoice not created: ${error instanceof Error ? error.message : String(error)}`,
-        10000
-      );
-      return;
-    }
-
+    // Write down the intent before touching the vault, including where the
+    // files are going. If the process stops between the two, the next load
+    // can ask the vault which side of the boundary it fell on.
+    const planned = writer.plannedPaths(number, client);
     const record: InvoiceRecord = {
       id: newInvoiceId(),
       number,
@@ -382,13 +408,50 @@ export default class TimeTrackerPlugin extends Plugin {
       allocations: draft.allocations,
       totalSeconds: draft.totalSeconds,
       totalMinor: draft.totalMinor,
-      markdownPath: written.markdownPath,
-      pdfPath: written.pdfPath,
+      markdownPath: planned.markdownPath,
+      pdfPath: null,
       voided: false,
     };
+    this.pendingIssue = record;
+    this.pendingPdfPath = this.settings.exportPdf ? planned.pdfPath : null;
+    try {
+      await this.saveAll();
+    } catch {
+      // saveAll already told the user. Without a durable marker there is no
+      // safe way to continue, so stop before anything is written.
+      this.pendingIssue = null;
+      this.pendingPdfPath = null;
+      return;
+    }
 
-    // Record only after the files exist, so a write failure can never leave
-    // hours marked as billed by an invoice nobody can produce.
+    let written;
+    try {
+      written = await writer.write(doc, {
+        exportPdf: this.settings.exportPdf,
+        pageSize: this.settings.pdfPageSize,
+        createdAt: new Date(issuedAt),
+        creator: `Time Tracker and Invoicing ${this.manifest.version}`,
+      });
+    } catch (error) {
+      // A rejection does not prove nothing was written: `vault.create` can
+      // reach storage and still reject. Ask the vault rather than trusting the
+      // error — if the invoice is sitting there it may already have been sent,
+      // and discarding the marker would leave its hours billable.
+      await this.reconcilePendingIssue();
+      new Notice(
+        `Invoice could not be completed: ${error instanceof Error ? error.message : String(error)}`,
+        10000
+      );
+      return;
+    }
+
+    record.markdownPath = written.markdownPath;
+    record.pdfPath = written.pdfPath;
+
+    // Promote the pending marker to a real invoice. Only now do its
+    // allocations start counting against future invoices.
+    this.pendingIssue = null;
+    this.pendingPdfPath = null;
     this.settings.invoiceSeq = seq + 1;
     await this.store.addInvoice(record);
 
@@ -519,6 +582,7 @@ export default class TimeTrackerPlugin extends Plugin {
     this.invoices = data.invoices;
     this.legacyUnknownBefore = data.legacyUnknownBefore;
     this.quarantined = data.quarantined;
+    this.pendingIssue = data.pendingIssue;
     this.readOnly = report.readOnly;
 
     for (const note of report.notes) {
@@ -564,6 +628,7 @@ export default class TimeTrackerPlugin extends Plugin {
       invoices: this.store ? [...this.store.getInvoices()] : this.invoices,
       legacyUnknownBefore: this.legacyUnknownBefore,
       quarantined: this.quarantined,
+      pendingIssue: this.pendingIssue,
     };
     try {
       await this.saveData(data);

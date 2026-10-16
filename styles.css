@@ -96,3 +96,8 @@
   font-size: 0.9em;
   margin: 4px 0 12px;
 }
+
+.tti-feedback-links {
+  display: flex;
+  gap: 16px;
+}

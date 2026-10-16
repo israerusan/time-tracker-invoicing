@@ -61,6 +61,16 @@ export class InvoiceWriter {
     throw new Error("Could not find an unused invoice number. Check the invoice folder.");
   }
 
+  /**
+   * Where this invoice will be written, decided before anything is written.
+   * The issuance records its intent at these paths first, so a crash during
+   * the write can be reconciled afterwards by asking whether they exist.
+   */
+  plannedPaths(number: string, client: string): { markdownPath: string; pdfPath: string } {
+    const markdownPath = this.markdownPathFor(number, client);
+    return { markdownPath, pdfPath: this.pdfPathFor(markdownPath) };
+  }
+
   private markdownPathFor(number: string, client: string): string {
     const folder = normalizePath(this.settings.invoiceFolder || "Invoices");
     const name = fileNameComponent(`Invoice ${number} - ${client}`, `Invoice ${number}`);

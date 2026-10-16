@@ -219,3 +219,80 @@ test("migrate: an allocation naming an unknown entry quarantines the invoice", (
   assert.equal(data.invoices.length, 0);
   assert.equal(report.quarantined, 1);
 });
+
+test("migrate: an invoice with no allocation list is quarantined, not read as billing nothing", () => {
+  const { migrate } = core;
+  // This is the regression that mattered most: reading a missing or corrupt
+  // allocation list as "[]" returns already-invoiced hours to the billable
+  // pool, and the client gets charged for them a second time.
+  for (const allocations of [undefined, null, "corrupt", 42, {}, []]) {
+    const base = v1File();
+    base.schemaVersion = 2;
+    base.invoices = [
+      {
+        id: "i1", number: "2026-0001", client: "Acme", issuedAt: NOW,
+        totalMinor: 1000, totalSeconds: 3600,
+        ...(allocations === undefined ? {} : { allocations }),
+      },
+    ];
+    const { data, report } = migrate(base, NOW);
+    assert.equal(data.invoices.length, 0, `allocations=${JSON.stringify(allocations)} must not be kept`);
+    assert.equal(report.quarantined, 1);
+    assert.equal(data.quarantined.length, 1, "the original is preserved verbatim");
+  }
+});
+
+test("migrate: a duplicate human-facing invoice number is quarantined", () => {
+  const { migrate } = core;
+  const base = v1File();
+  const e = base.entries[0];
+  base.schemaVersion = 2;
+  const alloc = [{ entryId: e.id, from: e.start, to: e.start + 3600_000 }];
+  base.invoices = [
+    { id: "a", number: "2026-0001", client: "Acme", issuedAt: NOW, totalMinor: 1, totalSeconds: 1, allocations: alloc },
+    { id: "b", number: "2026-0001", client: "Acme", issuedAt: NOW, totalMinor: 1, totalSeconds: 1, allocations: alloc },
+  ];
+  const { data, report } = migrate(base, NOW);
+  assert.equal(data.invoices.length, 1);
+  assert.equal(data.invoices[0].id, "a", "the first record keeps the number");
+  assert.equal(report.quarantined, 1);
+});
+
+test("migrate: a pending issuance round-trips, and an impossible one is quarantined", () => {
+  const { migrate } = core;
+  const base = v1File();
+  const e = base.entries[0];
+  base.schemaVersion = 2;
+  base.pendingIssue = {
+    id: "p1", number: "2026-0007", client: "Acme", issuedAt: NOW,
+    totalMinor: 1000, totalSeconds: 3600,
+    markdownPath: "Invoices/Invoice 2026-0007 - Acme.md",
+    allocations: [{ entryId: e.id, from: e.start, to: e.start + 3600_000 }],
+  };
+  const kept = migrate(base, NOW);
+  assert.equal(kept.data.pendingIssue?.number, "2026-0007");
+  assert.equal(kept.data.pendingIssue?.markdownPath, "Invoices/Invoice 2026-0007 - Acme.md");
+
+  base.pendingIssue.allocations = [{ entryId: "te_nope", from: 1, to: 2 }];
+  const dropped = migrate(base, NOW);
+  assert.equal(dropped.data.pendingIssue, null);
+  assert.equal(dropped.report.quarantined, 1);
+});
+
+test("migrate: a pending issuance does not count as billed until it is finalised", () => {
+  const { migrate, buildDraft } = core;
+  const base = v1File();
+  const e = base.entries[0];
+  base.schemaVersion = 2;
+  base.pendingIssue = {
+    id: "p1", number: "2026-0007", client: "Acme", issuedAt: NOW,
+    totalMinor: 1000, totalSeconds: 3600, markdownPath: "Invoices/x.md",
+    allocations: [{ entryId: e.id, from: e.start, to: e.end }],
+  };
+  const { data } = migrate(base, NOW);
+  const draft = buildDraft({
+    entries: data.entries, invoices: data.invoices, client: "Acme", period: null,
+    rateMinor: 10000, roundHoursTo: 0.25, legacyUnknownBefore: null,
+  });
+  assert.equal(draft.totalSeconds, 2 * 3600, "the hours stay billable while the issuance is unresolved");
+});

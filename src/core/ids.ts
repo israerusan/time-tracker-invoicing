@@ -14,8 +14,11 @@
 /** 16 random bytes, base36-encoded in two halves. ~96 bits of entropy. */
 function randomToken(): string {
   const bytes = new Uint8Array(16);
-  const cryptoObj: Crypto | undefined =
-    typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  // The bare `crypto` global rather than `window.crypto` or `globalThis`:
+  // this module must work unchanged in Obsidian (where it is a browser
+  // global) and under the test runner (where Node exposes the same Web Crypto
+  // object), and it must not reach for a DOM global it does not need.
+  const cryptoObj: Crypto | undefined = typeof crypto !== "undefined" ? crypto : undefined;
 
   if (cryptoObj?.getRandomValues) {
     cryptoObj.getRandomValues(bytes);

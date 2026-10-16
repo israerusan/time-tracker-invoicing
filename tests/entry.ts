@@ -15,6 +15,7 @@ export * from "../src/core/intervals";
 export * from "../src/core/invoiceModel";
 export * from "../src/core/markdown";
 export * from "../src/core/migrate";
+export * from "../src/core/reconcile";
 export * from "../src/pdf/winAnsi";
 export * from "../src/pdf/fontMetrics";
 export * from "../src/pdf/pdfWriter";

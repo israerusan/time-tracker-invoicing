@@ -80,7 +80,7 @@ function readEntry(raw: unknown): TimeEntry | null {
   if (client === null || project === null) return null;
 
   return {
-    ...(raw as object),
+    ...raw,
     id: plainString(raw.id) ?? "",
     filePath: plainString(raw.filePath) ?? "",
     fileName: plainString(raw.fileName) ?? "",
@@ -89,7 +89,7 @@ function readEntry(raw: unknown): TimeEntry | null {
     start,
     end,
     description: plainString(raw.description) ?? undefined,
-  } as TimeEntry;
+  };
 }
 
 function readActiveTimer(raw: unknown): ActiveTimer | null {
@@ -152,19 +152,22 @@ function readInvoice(raw: unknown): InvoiceRecord | null {
   if (!id || !number || client === null || issuedAt === null) return null;
   if (totalMinor === null || totalSeconds === null) return null;
 
+  // The allocation list IS the record of what was billed. A missing or
+  // non-array value must never be read as "this invoice billed nothing" —
+  // that silently returns real, already-invoiced hours to the billable pool
+  // and lets the client be charged for them a second time.
+  if (!Array.isArray(raw.allocations) || raw.allocations.length === 0) return null;
   const allocations: InvoiceAllocation[] = [];
-  if (Array.isArray(raw.allocations)) {
-    for (const a of raw.allocations) {
-      const parsed = readAllocation(a);
-      // A dropped allocation would un-bill real work, so refuse the whole
-      // record rather than keep a partial one.
-      if (!parsed) return null;
-      allocations.push(parsed);
-    }
+  for (const a of raw.allocations) {
+    const parsed = readAllocation(a);
+    // A dropped allocation would un-bill real work, so refuse the whole
+    // record rather than keep a partial one.
+    if (!parsed) return null;
+    allocations.push(parsed);
   }
 
   return {
-    ...(raw as object),
+    ...raw,
     id,
     number,
     client,
@@ -180,7 +183,7 @@ function readInvoice(raw: unknown): InvoiceRecord | null {
     markdownPath: plainString(raw.markdownPath),
     pdfPath: plainString(raw.pdfPath),
     voided: raw.voided === true,
-  } as InvoiceRecord;
+  };
 }
 
 function readSettings(raw: unknown): PluginSettings {
@@ -227,7 +230,10 @@ export function migrate(raw: unknown, now: number): { data: PersistedData; repor
     );
   }
 
-  const quarantined: unknown[] = Array.isArray(root.quarantined) ? [...root.quarantined] : [];
+  const previouslyQuarantined: unknown[] = Array.isArray(root.quarantined)
+    ? (root.quarantined as unknown[])
+    : [];
+  const quarantined: unknown[] = [...previouslyQuarantined];
 
   // ---- entries -------------------------------------------------------------
   const entries: TimeEntry[] = [];
@@ -262,11 +268,15 @@ export function migrate(raw: unknown, now: number): { data: PersistedData; repor
   const seenInvoiceIds = new Set<string>();
   const rawInvoices = Array.isArray(root.invoices) ? root.invoices : [];
   const entriesById = new Map(entries.map((e) => [e.id, e]));
+  const seenInvoiceNumbers = new Set<string>();
   for (const rawInvoice of rawInvoices) {
     const invoice = readInvoice(rawInvoice);
     if (
       !invoice ||
       seenInvoiceIds.has(invoice.id) ||
+      // Two records sharing one human-facing number is how a billing dispute
+      // starts; keep the first and set the later one aside.
+      seenInvoiceNumbers.has(invoice.number) ||
       !allocationsFitEntries(invoice.allocations, entriesById)
     ) {
       quarantined.push(rawInvoice);
@@ -275,6 +285,7 @@ export function migrate(raw: unknown, now: number): { data: PersistedData; repor
       continue;
     }
     seenInvoiceIds.add(invoice.id);
+    seenInvoiceNumbers.add(invoice.number);
     invoices.push(invoice);
   }
 
@@ -294,12 +305,23 @@ export function migrate(raw: unknown, now: number): { data: PersistedData; repor
     }
   }
 
+  // An issuance that was interrupted mid-write. Validated the same way as a
+  // real invoice, except that its allocations are not yet binding — the
+  // plugin decides on load whether the files it was writing exist.
+  let pendingIssue = readInvoice(root.pendingIssue);
+  if (pendingIssue && !allocationsFitEntries(pendingIssue.allocations, new Map(entries.map((e) => [e.id, e])))) {
+    quarantined.push(root.pendingIssue);
+    report.quarantined += 1;
+    pendingIssue = null;
+  }
+
   const data: PersistedData = {
     schemaVersion: report.readOnly ? report.fromSchema : CURRENT_SCHEMA,
     settings: readSettings(root.settings),
     entries,
     activeTimer: readActiveTimer(root.activeTimer),
     invoices,
+    pendingIssue,
     legacyUnknownBefore,
     quarantined,
   };

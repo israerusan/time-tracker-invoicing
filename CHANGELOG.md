@@ -57,6 +57,21 @@ project follows [Semantic Versioning](https://semver.org/).
 - **Long sender details wrap** instead of running under the "Bill to" column.
 - **A failure to create the invoice folder is reported** instead of being
   mistaken for a harmless concurrent creation.
+- **An invoice interrupted mid-write is reconciled rather than lost.** Writing
+  the invoice files and recording the invoice are two operations and cannot be
+  made one. The intent is now written down first, including where the files are
+  going; on the next load the vault is asked which way it went. If the invoice
+  is there it is recorded — it may already have been sent, and its hours must
+  not become billable again. If it is not, the hours stay available. A
+  `vault.create` that reaches storage and *then* reports failure is handled the
+  same way, because the error alone cannot tell you which happened.
+- **A corrupt or missing allocation list quarantines the invoice** instead of
+  being read as "this invoice billed nothing", which would have returned
+  already-invoiced hours to the billable pool.
+- **Duplicate invoice numbers are quarantined** on load, not just duplicate
+  internal ids.
+- **A settings edit made in the last moments before unload is no longer
+  discarded.**
 - **Invoices no longer overwrite each other.** The old file name was derived
   from the year, month and client, and a collision called `vault.modify()` — so
   a deposit and a final invoice to the same client in the same month silently
@@ -94,10 +109,14 @@ project follows [Semantic Versioning](https://semver.org/).
   that guess is "bill the client again". You are warned before they are included.
 
 ### Internal
-- All arithmetic, aggregation, escaping, migration and PDF generation moved into
-  `src/core` and `src/pdf`, which import nothing from Obsidian and are covered by
-  42 tests. The test runner bundles those directories *without* marking
+- All arithmetic, aggregation, escaping, migration, reconciliation and PDF
+  generation moved into `src/core` and `src/pdf`, which import nothing from
+  Obsidian. The test runner bundles those directories *without* marking
   `obsidian` external, so an accidental import there fails the build.
+- A fake-vault harness runs the real `InvoiceWriter` against injected disk
+  failures — a create that rejects, a create that commits and then rejects, a
+  path already taken, an invoice folder that is really a file. 76 tests, up
+  from 2 that only checked the license key and the manifest.
 
 ## [1.0.1] - 2026-07-05
 
