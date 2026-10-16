@@ -37,14 +37,14 @@ function pending(overrides = {}) {
 const existing = (...paths) => (path) => paths.includes(path);
 
 test("reconcile: crash before any file was written — discard, hours stay billable", () => {
-  const out = core.resolvePendingIssue(pending(), existing(), PDF);
+  const out = core.resolvePendingIssue(pending({ pdfPath: PDF }), existing());
   assert.equal(out.action, "discard");
   assert.equal(out.record, null);
   assert.match(out.message, /still available to invoice/);
 });
 
 test("reconcile: crash after the markdown but before the PDF — record it, without a PDF path", () => {
-  const out = core.resolvePendingIssue(pending(), existing(MD), PDF);
+  const out = core.resolvePendingIssue(pending({ pdfPath: PDF }), existing(MD));
   assert.equal(out.action, "record");
   assert.equal(out.record.markdownPath, MD);
   assert.equal(out.record.pdfPath, null, "no PDF path is claimed for a file that is not there");
@@ -52,27 +52,27 @@ test("reconcile: crash after the markdown but before the PDF — record it, with
 });
 
 test("reconcile: crash after both files — record it, and keep the PDF path", () => {
-  const out = core.resolvePendingIssue(pending(), existing(MD, PDF), PDF);
+  const out = core.resolvePendingIssue(pending({ pdfPath: PDF }), existing(MD, PDF));
   assert.equal(out.action, "record");
   assert.equal(out.record.pdfPath, PDF, "the PDF is not lost just because the record was never finalised");
 });
 
 test("reconcile: the allocations survive intact, so the hours cannot be billed twice", () => {
-  const p = pending();
-  const out = core.resolvePendingIssue(p, existing(MD), PDF);
+  const p = pending({ pdfPath: PDF });
+  const out = core.resolvePendingIssue(p, existing(MD));
   assert.deepEqual(out.record.allocations, p.allocations);
   assert.equal(out.record.totalMinor, p.totalMinor);
   assert.equal(out.record.number, p.number, "and it keeps the number it was issued under");
 });
 
 test("reconcile: with PDF export off, no PDF path is invented", () => {
-  const out = core.resolvePendingIssue(pending(), existing(MD), null);
+  const out = core.resolvePendingIssue(pending({ pdfPath: null }), existing(MD));
   assert.equal(out.action, "record");
   assert.equal(out.record.pdfPath, null);
 });
 
 test("reconcile: a pending record with no planned markdown path is discarded", () => {
-  const out = core.resolvePendingIssue(pending({ markdownPath: null }), existing(MD), PDF);
+  const out = core.resolvePendingIssue(pending({ markdownPath: null, pdfPath: PDF }), existing(MD));
   assert.equal(out.action, "discard");
 });
 
@@ -80,13 +80,13 @@ test("reconcile: the vault is believed over the error — a committed write is r
   // The case that matters: `vault.create` reached storage and then threw. The
   // caller sees only a rejection; the file is there and may already have been
   // sent. Trusting the error would return its hours to the billable pool.
-  const out = core.resolvePendingIssue(pending(), existing(MD), PDF);
+  const out = core.resolvePendingIssue(pending({ pdfPath: PDF }), existing(MD));
   assert.equal(out.action, "record");
 });
 
 test("reconcile: a decision never mutates the pending record it was given", () => {
-  const p = pending();
+  const p = pending({ pdfPath: PDF });
   const snapshot = JSON.stringify(p);
-  core.resolvePendingIssue(p, existing(MD, PDF), PDF);
+  core.resolvePendingIssue(p, existing(MD, PDF));
   assert.equal(JSON.stringify(p), snapshot);
 });

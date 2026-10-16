@@ -3,6 +3,30 @@
 All notable changes to Time Tracker and Invoicing are documented here. This
 project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-10-16
+
+The Obsidian-facing half of 2.0.0 had been typechecked and linted but never
+run. It now runs under a test harness that supplies the parts of the API it
+uses — a small DOM, the vault, the modals, the settings tab, a controllable
+clock — so `onload`, the commands, the status bar, the settings pane and the
+whole invoice flow execute on every test run. Two real defects fell out of
+that immediately.
+
+### Fixed
+- **A recovered invoice no longer forgets its PDF.** Where the PDF was going
+  was held in memory only, so an invoice recovered after a crash — the one
+  case the memory is gone — was recorded without it, even with the file
+  sitting next to the Markdown. The path is now part of the durable marker.
+- **An unreadable pending-issuance marker is quarantined rather than dropped.**
+  It is still evidence that an issuance was interrupted, and silently
+  discarding it hid the one clue that something needed looking at.
+- **A failure inside reconciliation is reported.** It ran as a discarded
+  promise, so if it threw, nothing was shown.
+
+### Internal
+- `tests/fakeObsidian.mjs` and `tests/plugin.test.mjs`: the real plugin, driven
+  end to end. 98 tests, up from 76.
+
 ## [2.0.0] - 2026-10-15
 
 ### Added

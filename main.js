@@ -4512,11 +4512,17 @@ function migrate(raw, now) {
       );
     }
   }
-  let pendingIssue = readInvoice(root.pendingIssue);
-  if (pendingIssue && !allocationsFitEntries(pendingIssue.allocations, new Map(entries.map((e) => [e.id, e])))) {
-    quarantined.push(root.pendingIssue);
-    report.quarantined += 1;
-    pendingIssue = null;
+  let pendingIssue = null;
+  if (root.pendingIssue !== void 0 && root.pendingIssue !== null) {
+    pendingIssue = readInvoice(root.pendingIssue);
+    if (pendingIssue && !allocationsFitEntries(pendingIssue.allocations, entriesById)) {
+      pendingIssue = null;
+    }
+    if (!pendingIssue) {
+      quarantined.push(root.pendingIssue);
+      report.quarantined += 1;
+      report.changed = true;
+    }
   }
   const data = {
     schemaVersion: report.readOnly ? report.fromSchema : CURRENT_SCHEMA,
@@ -4542,8 +4548,7 @@ function migrate(raw, now) {
 }
 
 // src/core/reconcile.ts
-function resolvePendingIssue(pending, fileExists, plannedPdfPath) {
-  var _a;
+function resolvePendingIssue(pending, fileExists) {
   const markdownPath = pending.markdownPath;
   const markdownWritten = markdownPath !== null && fileExists(markdownPath);
   if (!markdownWritten) {
@@ -4553,8 +4558,7 @@ function resolvePendingIssue(pending, fileExists, plannedPdfPath) {
       message: `Invoice ${pending.number} for ${pending.client} was not finished and no file was written. That time is still available to invoice.`
     };
   }
-  const pdfCandidate = (_a = pending.pdfPath) != null ? _a : plannedPdfPath;
-  const pdfPath = pdfCandidate !== null && fileExists(pdfCandidate) ? pdfCandidate : null;
+  const pdfPath = pending.pdfPath !== null && fileExists(pending.pdfPath) ? pending.pdfPath : null;
   return {
     action: "record",
     record: { ...pending, pdfPath },
@@ -4760,8 +4764,6 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     this.legacyUnknownBefore = null;
     this.quarantined = [];
     this.pendingIssue = null;
-    /** Where the pending issuance intended to put its PDF. */
-    this.pendingPdfPath = null;
     /** Set when the data file came from a newer build; nothing is written. */
     this.readOnly = false;
     this.statusBarText = "";
@@ -4848,7 +4850,14 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
       })
     );
     this.addSettingTab(new TimeTrackerSettingTab(this.app, this));
-    this.app.workspace.onLayoutReady(() => void this.reconcilePendingIssue());
+    this.app.workspace.onLayoutReady(() => {
+      this.reconcilePendingIssue().catch((error) => {
+        new import_obsidian4.Notice(
+          `Time Tracker could not resolve an unfinished invoice: ${error instanceof Error ? error.message : String(error)}`,
+          0
+        );
+      });
+    });
   }
   /**
    * Finish, or abandon, an issuance that was interrupted.
@@ -4863,11 +4872,9 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     if (!pending || this.readOnly) return;
     const outcome = resolvePendingIssue(
       pending,
-      (path) => this.app.vault.getAbstractFileByPath(path) !== null,
-      this.pendingPdfPath
+      (path) => this.app.vault.getAbstractFileByPath(path) !== null
     );
     this.pendingIssue = null;
-    this.pendingPdfPath = null;
     if (outcome.action === "record" && outcome.record) {
       await this.store.addInvoice(outcome.record);
     } else {
@@ -5062,16 +5069,15 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
       totalSeconds: draft.totalSeconds,
       totalMinor: draft.totalMinor,
       markdownPath: planned.markdownPath,
-      pdfPath: null,
+      // Where the PDF is going, recorded now so a crash does not lose it.
+      pdfPath: this.settings.exportPdf ? planned.pdfPath : null,
       voided: false
     };
     this.pendingIssue = record;
-    this.pendingPdfPath = this.settings.exportPdf ? planned.pdfPath : null;
     try {
       await this.saveAll();
     } catch (e) {
       this.pendingIssue = null;
-      this.pendingPdfPath = null;
       return;
     }
     let written;
@@ -5093,7 +5099,6 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     record.markdownPath = written.markdownPath;
     record.pdfPath = written.pdfPath;
     this.pendingIssue = null;
-    this.pendingPdfPath = null;
     this.settings.invoiceSeq = seq + 1;
     await this.store.addInvoice(record);
     const file = this.app.vault.getAbstractFileByPath(written.markdownPath);

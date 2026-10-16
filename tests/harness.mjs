@@ -81,10 +81,18 @@ export async function loadGlue() {
     entryPoints: [path.join(root, "tests/glueEntry.ts")],
     bundle: true,
     format: "esm",
-    platform: "neutral",
+    // "node", not "neutral": the plugin has a real runtime dependency
+    // (tweetnacl) that must resolve from node_modules.
+    platform: "node",
     target: "es2020",
     outfile: outFile,
     logLevel: "silent",
+    // tweetnacl's CJS build reaches for `require("crypto")` when it cannot
+    // find a browser CSPRNG. ESM output has no `require`, so supply one.
+    // Test-only: the shipped bundle is CJS and never takes this path.
+    banner: {
+      js: "import { createRequire as __tti_cr } from \"node:module\"; const require = __tti_cr(import.meta.url);",
+    },
     plugins: [
       {
         name: "obsidian-fake",

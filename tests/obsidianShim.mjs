@@ -1,10 +1,21 @@
 /**
- * The slice of the `obsidian` module that `src/invoice.ts` imports at runtime.
- * Types are erased by the compiler, so only the values are needed here.
+ * The `obsidian` module, as far as this plugin is concerned.
+ *
+ * The harness resolves `import ... from "obsidian"` here, so the real plugin
+ * code runs unmodified against a fake vault, a fake DOM and a controllable
+ * clock. Kept external to the test bundle so `instanceof` holds across the
+ * boundary.
  */
-export { TFile, TFolder, normalizePath } from "./fakeVault.mjs";
-export class Notice {
-  constructor(message) {
-    this.message = message;
-  }
-}
+export {
+  TFile,
+  TFolder,
+  normalizePath,
+  Notice,
+  Modal,
+  SuggestModal,
+  FuzzySuggestModal,
+  Setting,
+  PluginSettingTab,
+  Plugin,
+  Component,
+} from "./fakeObsidian.mjs";

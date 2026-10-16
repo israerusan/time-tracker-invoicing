@@ -32,8 +32,7 @@ export interface ReconcileResult {
 
 export function resolvePendingIssue(
   pending: InvoiceRecord,
-  fileExists: (path: string) => boolean,
-  plannedPdfPath: string | null
+  fileExists: (path: string) => boolean
 ): ReconcileResult {
   const markdownPath = pending.markdownPath;
   const markdownWritten = markdownPath !== null && fileExists(markdownPath);
@@ -48,11 +47,16 @@ export function resolvePendingIssue(
     };
   }
 
-  // The PDF is optional and may legitimately be absent — export can be off, or
-  // the client name may be outside what the PDF font can draw. Record only the
-  // path that is actually there.
-  const pdfCandidate = pending.pdfPath ?? plannedPdfPath;
-  const pdfPath = pdfCandidate !== null && fileExists(pdfCandidate) ? pdfCandidate : null;
+  // The pending record carries where the PDF was *going* to go, which is why
+  // that path is persisted with the marker rather than kept in memory: after a
+  // crash there is no memory left, and a recovered invoice would otherwise
+  // forget a PDF that is sitting right next to it.
+  //
+  // It is only an intention. The PDF may legitimately be absent — export can
+  // be off, or the client's name may be outside what the font can draw — so
+  // the path is kept only if the file is really there.
+  const pdfPath =
+    pending.pdfPath !== null && fileExists(pending.pdfPath) ? pending.pdfPath : null;
 
   return {
     action: "record",

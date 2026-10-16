@@ -308,11 +308,19 @@ export function migrate(raw: unknown, now: number): { data: PersistedData; repor
   // An issuance that was interrupted mid-write. Validated the same way as a
   // real invoice, except that its allocations are not yet binding — the
   // plugin decides on load whether the files it was writing exist.
-  let pendingIssue = readInvoice(root.pendingIssue);
-  if (pendingIssue && !allocationsFitEntries(pendingIssue.allocations, new Map(entries.map((e) => [e.id, e])))) {
-    quarantined.push(root.pendingIssue);
-    report.quarantined += 1;
-    pendingIssue = null;
+  let pendingIssue: InvoiceRecord | null = null;
+  if (root.pendingIssue !== undefined && root.pendingIssue !== null) {
+    pendingIssue = readInvoice(root.pendingIssue);
+    if (pendingIssue && !allocationsFitEntries(pendingIssue.allocations, entriesById)) {
+      pendingIssue = null;
+    }
+    if (!pendingIssue) {
+      // A marker we cannot trust is still evidence that an issuance was
+      // interrupted; set it aside rather than letting it vanish.
+      quarantined.push(root.pendingIssue);
+      report.quarantined += 1;
+      report.changed = true;
+    }
   }
 
   const data: PersistedData = {

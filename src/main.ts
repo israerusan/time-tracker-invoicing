@@ -40,8 +40,6 @@ export default class TimeTrackerPlugin extends Plugin {
   private legacyUnknownBefore: number | null = null;
   private quarantined: unknown[] = [];
   private pendingIssue: InvoiceRecord | null = null;
-  /** Where the pending issuance intended to put its PDF. */
-  private pendingPdfPath: string | null = null;
   /** Set when the data file came from a newer build; nothing is written. */
   private readOnly = false;
 
@@ -147,7 +145,16 @@ export default class TimeTrackerPlugin extends Plugin {
 
     // The vault index is not reliable during onload, and reconciliation asks
     // the vault whether a file exists.
-    this.app.workspace.onLayoutReady(() => void this.reconcilePendingIssue());
+    this.app.workspace.onLayoutReady(() => {
+      this.reconcilePendingIssue().catch((error: unknown) => {
+        new Notice(
+          `Time Tracker could not resolve an unfinished invoice: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          0
+        );
+      });
+    });
   }
 
   /**
@@ -162,14 +169,11 @@ export default class TimeTrackerPlugin extends Plugin {
     const pending = this.pendingIssue;
     if (!pending || this.readOnly) return;
 
-    const outcome = resolvePendingIssue(
-      pending,
-      (path) => this.app.vault.getAbstractFileByPath(path) !== null,
-      this.pendingPdfPath
+    const outcome = resolvePendingIssue(pending, (path) =>
+      this.app.vault.getAbstractFileByPath(path) !== null
     );
 
     this.pendingIssue = null;
-    this.pendingPdfPath = null;
 
     if (outcome.action === "record" && outcome.record) {
       await this.store.addInvoice(outcome.record);
@@ -409,18 +413,17 @@ export default class TimeTrackerPlugin extends Plugin {
       totalSeconds: draft.totalSeconds,
       totalMinor: draft.totalMinor,
       markdownPath: planned.markdownPath,
-      pdfPath: null,
+      // Where the PDF is going, recorded now so a crash does not lose it.
+      pdfPath: this.settings.exportPdf ? planned.pdfPath : null,
       voided: false,
     };
     this.pendingIssue = record;
-    this.pendingPdfPath = this.settings.exportPdf ? planned.pdfPath : null;
     try {
       await this.saveAll();
     } catch {
       // saveAll already told the user. Without a durable marker there is no
       // safe way to continue, so stop before anything is written.
       this.pendingIssue = null;
-      this.pendingPdfPath = null;
       return;
     }
 
@@ -451,7 +454,6 @@ export default class TimeTrackerPlugin extends Plugin {
     // Promote the pending marker to a real invoice. Only now do its
     // allocations start counting against future invoices.
     this.pendingIssue = null;
-    this.pendingPdfPath = null;
     this.settings.invoiceSeq = seq + 1;
     await this.store.addInvoice(record);
 
