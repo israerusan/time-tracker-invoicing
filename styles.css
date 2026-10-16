@@ -101,3 +101,32 @@
   display: flex;
   gap: 16px;
 }
+
+/* The offer, shown inside the invoice preview a free user just computed */
+.tti-upsell-terms {
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.tti-upsell-buy {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.tti-upsell-key {
+  margin: 4px 0;
+}
+
+/* The explanation above the locked invoicing rows */
+.tti-locked-note {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  font-size: 0.9em;
+}
+
+.tti-locked-note p {
+  margin: 0 0 6px;
+}

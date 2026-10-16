@@ -65,15 +65,19 @@ test("plugin: onload completes and registers the expected surface", async () => 
   }
 });
 
-test("plugin: the premium commands are hidden until licensed", async () => {
+test("plugin: the preview is open to Lite; only voiding is hidden", async () => {
   const { plugin, timers } = await boot();
   try {
-    assert.equal(plugin.commandAvailable("generate-invoice"), false);
-    assert.equal(plugin.commandAvailable("void-invoice"), false);
+    // The gate is on the write, not on seeing the number. A free user who
+    // cannot reach the preview never finds out what the paid half is worth.
+    assert.equal(plugin.commandAvailable("generate-invoice"), true);
     assert.equal(plugin.commandAvailable("start-tracking"), true);
+    // Voiding is not a preview of value, and there is nothing to void.
+    assert.equal(plugin.commandAvailable("void-invoice"), false);
 
     licence(plugin);
     assert.equal(plugin.commandAvailable("generate-invoice"), true);
+    assert.equal(plugin.commandAvailable("void-invoice"), true);
   } finally {
     plugin.onunload();
     timers.uninstall();
@@ -232,6 +236,195 @@ async function issueInvoice(plugin, { clientIndex = 0, periodIndex = 2 } = {}) {
   await new Promise((r) => setImmediate(r));
   return confirm;
 }
+
+/** Open the preview the way a user clicks it, and hand back the modal. */
+function openPreview(plugin, { clientIndex = 0, periodIndex = 2 } = {}) {
+  openModals.length = 0;
+  plugin.runCommand("generate-invoice");
+  openModals.at(-1).choose(clientIndex);
+  openModals.at(-1).choose(periodIndex); // 2 = "All unbilled time"
+  return openModals.at(-1);
+}
+
+test("plugin: a Lite user sees their own total, and confirming writes nothing", async () => {
+  const { plugin, app, timers } = await boot();
+  try {
+    // No licence() call: this is the free tier throughout.
+    await recordTime(plugin, app, {
+      client: "Acme GmbH", project: "Phase One", hours: 3.5, startIso: "2026-10-01T09:00:00",
+    });
+
+    const preview = openPreview(plugin);
+    const shown = preview.contentEl.allText();
+    assert.match(shown, /Phase One/, "their own line is listed");
+    assert.match(shown, /3\.50/, "their own hours");
+    assert.match(shown, /USD 350\.00/, "their own money, at the default rate");
+
+    // The same button a paying user presses - and it writes nothing.
+    preview.button("Issue invoice").dispatch("click");
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setImmediate(r));
+
+    const upsell = preview.contentEl.allText();
+    assert.match(upsell, /Invoice Acme GmbH for USD 350\.00/, "the ask is their own amount");
+    assert.match(upsell, /1 line, 3\.50h, USD 350\.00/);
+    assert.match(upsell, /\$29 one-time, offline key, no account, no subscription\./);
+    const buy = preview.contentEl
+      .walk()
+      .find((el) => el.tagName === "A" && /\$29/.test(el.textContent));
+    assert.ok(buy, "a primary link to the purchase page");
+    assert.equal(buy.attrs.href, plugin.settings.purchaseUrl);
+
+    assert.equal(plugin.store.getInvoices().length, 0, "nothing was recorded");
+    assert.equal(app.vault.contents.size, 1, "and nothing but the tracked note is in the vault");
+    assert.equal(
+      plugin.store.totalsByClient()[0].unbilledSeconds,
+      3.5 * 3600,
+      "the hours are still billable, so a later invoice cannot double-bill them"
+    );
+    // Not dumped into the settings pane with a Notice.
+    assert.ok(!/Settings/i.test(lastNotice()), `unexpected notice: ${lastNotice()}`);
+  } finally {
+    plugin.onunload();
+    timers.uninstall();
+  }
+});
+
+test("plugin: pasting a key in the preview unlocks it there, not in settings", async () => {
+  const { plugin, app, timers } = await boot();
+  try {
+    await recordTime(plugin, app, {
+      client: "Acme GmbH", project: "Phase One", hours: 2, startIso: "2026-10-01T09:00:00",
+    });
+
+    // The real verification is covered by tests/license.test.mjs; what is
+    // under test here is the wiring, so the signature check is stood in for.
+    plugin.activateLicense = (key) => {
+      if (key.trim() !== "good.key") return false;
+      plugin.settings.isPro = true;
+      return true;
+    };
+
+    const preview = openPreview(plugin);
+    preview.button("Issue invoice").dispatch("click");
+    preview.button("I have a key").dispatch("click");
+
+    const field = modalComponent(preview, "License key");
+    field.type("nonsense");
+    field.blur();
+    assert.match(
+      preview.contentEl.allText(),
+      /could not be verified/,
+      "a bad key is answered in the dialog"
+    );
+    assert.equal(preview.button("Issue invoice"), null, "and does not unlock the write");
+
+    field.type("good.key");
+    field.blur();
+
+    // Straight back to their invoice, with a button that now writes it.
+    assert.match(preview.contentEl.allText(), /Invoice 2026-0001 — Acme GmbH/);
+    const issue = preview.button("Issue invoice");
+    assert.ok(issue, "the preview is back, confirmable");
+    issue.dispatch("click");
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setImmediate(r));
+
+    const invoices = plugin.store.getInvoices();
+    assert.equal(invoices.length, 1, `nothing was written; last notice: ${lastNotice()}`);
+    assert.ok(app.vault.getAbstractFileByPath(invoices[0].markdownPath));
+  } finally {
+    plugin.onunload();
+    timers.uninstall();
+  }
+});
+
+test("plugin: stopping a timer reports the money, not only the hours", async () => {
+  const { plugin, app, timers } = await boot();
+  try {
+    openNote(app, "Work.md", { client: "Acme GmbH", project: "Build" });
+    await plugin.startTracking();
+    const active = plugin.store.getActiveTimer();
+    active.start -= 2 * 3600_000; // two hours ago
+    await plugin.stopTracking();
+
+    assert.match(lastNotice(), /Logged 2\.00h to Acme GmbH/);
+    assert.match(lastNotice(), /2\.00h unbilled for Acme GmbH — USD 200\.00/);
+
+    // And the idle status bar carries the stake, rather than "Not tracking".
+    assert.match(plugin.statusBarItems[0].textContent, /2\.00h unbilled · USD 200\.00/);
+    assert.equal(timers.activeIntervals(), 0, "still nothing ticking while idle");
+  } finally {
+    plugin.onunload();
+    timers.uninstall();
+  }
+});
+
+test("plugin: a broken rate shows hours and names the rate, never a made-up total", async () => {
+  const { plugin, app, timers } = await boot();
+  try {
+    openNote(app, "Work.md", { client: "Acme GmbH" });
+    await plugin.startTracking();
+    plugin.store.getActiveTimer().start -= 3600_000;
+    plugin.settings.defaultHourlyRate = Number.NaN;
+    await plugin.stopTracking();
+
+    assert.match(lastNotice(), /1\.00h unbilled for Acme GmbH\./);
+    assert.ok(!/USD/.test(lastNotice()), `no amount was invented: ${lastNotice()}`);
+    assert.match(lastNotice(), /not a valid amount/);
+    assert.equal(plugin.statusBarItems[0].textContent, "1.00h unbilled");
+
+    plugin.runCommand("show-totals");
+    assert.match(lastNotice(), /Acme GmbH: 1\.00h unbilled \(1\.00h tracked\)/);
+    assert.match(lastNotice(), /not a valid amount/);
+  } finally {
+    plugin.onunload();
+    timers.uninstall();
+  }
+});
+
+test("plugin: the first stop on an untagged note explains the default client", async () => {
+  const { plugin, app, timers } = await boot();
+  try {
+    openNote(app, "Loose Note.md");
+    await plugin.startTracking();
+    await plugin.stopTracking();
+    assert.match(lastNotice(), /Set a "client" property on the note/);
+
+    // Said once, not on every stop.
+    openNote(app, "Another.md");
+    await plugin.startTracking();
+    await plugin.stopTracking();
+    assert.ok(!/Set a "client" property/.test(lastNotice()), `nagged again: ${lastNotice()}`);
+  } finally {
+    plugin.onunload();
+    timers.uninstall();
+  }
+});
+
+test("plugin: totals list unbilled hours and what they are worth", async () => {
+  const { plugin, app, timers } = await boot();
+  try {
+    await recordTime(plugin, app, {
+      client: "Acme GmbH", project: "Phase One", hours: 3, startIso: "2026-10-01T09:00:00",
+    });
+    await recordTime(plugin, app, {
+      client: "Globex", project: "Audit", hours: 1.5, startIso: "2026-10-02T09:00:00",
+    });
+
+    plugin.runCommand("show-totals");
+    const message = lastNotice();
+    assert.match(message, /Acme GmbH: 3\.00h unbilled — USD 300\.00 \(3\.00h tracked\)/);
+    assert.match(message, /Globex: 1\.50h unbilled — USD 150\.00 \(1\.50h tracked\)/);
+    assert.ok(
+      notices.at(-1).timeout >= 15000,
+      "it stays up long enough to read more than one client"
+    );
+  } finally {
+    plugin.onunload();
+    timers.uninstall();
+  }
+});
 
 test("plugin: the whole invoice flow writes a markdown invoice and a PDF", async () => {
   const { plugin, app, timers } = await boot();
@@ -499,6 +692,9 @@ test("plugin: the settings tab renders in both tiers without throwing", async ()
     const free = tab.containerEl.allText();
     assert.match(free, /Lite tier active/);
     assert.match(free, /\(Premium\)/, "premium rows are shown as locked");
+    assert.match(free, /Run Generate invoice first/, "the preview is pointed at before the price");
+    assert.match(free, /appear on the invoice itself/, "the locked rows say what they are for");
+    assert.match(free, /\$29 one-time/, "and the ask names the price");
 
     licence(plugin);
     tab.display();
@@ -565,6 +761,21 @@ test("plugin: the license is verified on blur, not on every character", async ()
     timers.uninstall();
   }
 });
+
+/** The input component behind a setting row rendered inside a modal. */
+function modalComponent(modal, name) {
+  const setting = (modal.contentEl.settings ?? [])
+    .concat(
+      modal.contentEl
+        .walk()
+        .flatMap((el) => el.settings ?? [])
+    )
+    .find((s) => s.name === name);
+  if (!setting || setting.components.length === 0) {
+    throw new Error(`no input for "${name}" in this modal`);
+  }
+  return setting.components[0];
+}
 
 /** The input component behind the setting row with this name. */
 function findComponent(tab, name) {

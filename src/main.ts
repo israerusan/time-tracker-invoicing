@@ -16,7 +16,7 @@ import { migrate } from "./core/migrate";
 import { newInvoiceId } from "./core/ids";
 import { buildDraft, draftToDocument } from "./core/invoiceModel";
 import { resolvePendingIssue } from "./core/reconcile";
-import { formatHours, formatMoney, parseRateToMinor } from "./core/money";
+import { amountMinor, formatHours, formatMoney, parseRateToMinor } from "./core/money";
 import { BillingPeriod, periodRangeLabel } from "./core/period";
 import {
   ClientPickModal,
@@ -29,6 +29,16 @@ import {
 const TICK_MS = 1000;
 /** Quiet period before settings edits are written to disk. */
 const SAVE_DEBOUNCE_MS = 400;
+/**
+ * Below this, unbilled time is not worth quoting.
+ *
+ * Stopping a timer a second after starting it leaves a few hundred
+ * milliseconds in the ledger, and "0.00h unbilled - USD 0.00" in the status
+ * bar is noise dressed as information.
+ */
+const UNBILLED_FLOOR_SECONDS = 60;
+/** Said whenever the rate cannot be used, instead of showing a figure. */
+const RATE_UNUSABLE = "The default hourly rate is not a valid amount — fix it in settings.";
 
 export default class TimeTrackerPlugin extends Plugin {
   settings: PluginSettings = { ...DEFAULT_SETTINGS };
@@ -100,19 +110,20 @@ export default class TimeTrackerPlugin extends Plugin {
       callback: () => this.showTotals(),
     });
 
+    // Available in both tiers. The preview is where a free user sees what
+    // their own tracked hours come to; what the license gates is the write.
     this.addCommand({
       id: "generate-invoice",
-      name: "Generate invoice (Premium)",
-      checkCallback: (checking) => {
-        if (!this.settings.isPro) return false;
-        if (!checking) this.startInvoiceFlow();
-        return true;
-      },
+      name: "Generate invoice",
+      callback: () => this.startInvoiceFlow(),
     });
 
+    // Voiding stays hidden until there is a license. It is not a preview of
+    // anything - there is nothing to void until an invoice has been issued -
+    // so offering it to a free user would be a dead end, not a sales pitch.
     this.addCommand({
       id: "void-invoice",
-      name: "Void an issued invoice (Premium)",
+      name: "Void an issued invoice",
       checkCallback: (checking) => {
         if (!this.settings.isPro) return false;
         if (!checking) this.startVoidFlow();
@@ -243,7 +254,7 @@ export default class TimeTrackerPlugin extends Plugin {
     }
     const entry = await this.store.stop(Date.now());
     if (entry) {
-      new Notice(`Stopped. Logged ${formatHours(TimeStore.entrySeconds(entry))}h to ${entry.client}.`);
+      new Notice(this.stopMessage(entry), 10000);
     }
     this.syncTicker();
   }
@@ -261,24 +272,95 @@ export default class TimeTrackerPlugin extends Plugin {
     else void this.startTracking();
   }
 
+  /**
+   * What a stopped timer is worth, not just how long it ran.
+   *
+   * Hours are an input; the number that makes somebody invoice is the amount.
+   * The rate is never guessed: if it is not a usable figure the hours are
+   * still reported and the rate is named as the thing to fix.
+   */
+  private stopMessage(entry: TimeEntry): string {
+    const parts = [
+      `Stopped. Logged ${formatHours(TimeStore.entrySeconds(entry))}h to ${entry.client}.`,
+    ];
+
+    const unbilled = this.unbilledSecondsFor(entry.client);
+    if (unbilled >= UNBILLED_FLOOR_SECONDS) {
+      const amount = this.amountFor(unbilled);
+      parts.push(
+        amount
+          ? `${formatHours(unbilled)}h unbilled for ${entry.client} — ${amount}.`
+          : `${formatHours(unbilled)}h unbilled for ${entry.client}. ${RATE_UNUSABLE}`
+      );
+    }
+
+    // Once, after the very first stop. A first-time user who has not set a
+    // client property should know why their time landed under "Unassigned";
+    // they should not be stopped from tracking until they do.
+    if (entry.client === this.settings.defaultClient && this.store.getEntries().length === 1) {
+      parts.push(
+        `Set a "${this.settings.clientProperty}" property on the note, ` +
+          "or change Default client in settings."
+      );
+    }
+
+    return parts.join(" ");
+  }
+
   private showTotals(): void {
     const totals = this.store.totalsByClient();
     if (totals.length === 0) {
       new Notice("No tracked time yet.");
       return;
     }
-    const lines = totals.map(
-      (t) =>
-        `${t.client}: ${formatHours(t.unbilledSeconds)}h unbilled ` +
-        `(${formatHours(t.totalSeconds)}h tracked)`
-    );
-    new Notice("Tracked time by client:\n" + lines.join("\n"), 8000);
+    const lines = totals.map((t) => {
+      const amount = this.amountFor(t.unbilledSeconds);
+      return (
+        `${t.client}: ${formatHours(t.unbilledSeconds)}h unbilled` +
+        `${amount ? ` — ${amount}` : ""} (${formatHours(t.totalSeconds)}h tracked)`
+      );
+    });
+    if (this.rateMinor() === null) {
+      lines.push(RATE_UNUSABLE);
+    }
+    // Long enough to read several clients off, which 8 seconds was not.
+    new Notice("Unbilled time by client:\n" + lines.join("\n"), 15000);
+  }
+
+  /** Still-billable seconds for one client, or for every client. */
+  private unbilledSecondsFor(client: string | null): number {
+    const totals = this.store.totalsByClient();
+    if (client === null) {
+      return totals.reduce((sum, t) => sum + t.unbilledSeconds, 0);
+    }
+    return totals.find((t) => t.client === client)?.unbilledSeconds ?? 0;
+  }
+
+  /** The default rate in integer minor units, or null if it cannot be used. */
+  private rateMinor(): number | null {
+    return parseRateToMinor(this.settings.defaultHourlyRate, this.settings.currency);
+  }
+
+  /**
+   * What a block of unbilled time is worth at the default rate, or null when
+   * the rate is not a usable amount. Never invents a figure.
+   */
+  private amountFor(seconds: number): string | null {
+    const rateMinor = this.rateMinor();
+    if (rateMinor === null) return null;
+    return formatMoney(amountMinor(Math.round(seconds), rateMinor), this.settings.currency);
   }
 
   // ----------------------------------------------------------------------
   // Invoicing (premium)
   // ----------------------------------------------------------------------
 
+  /**
+   * Pick a client, pick a period, see the bill. Open to both tiers.
+   *
+   * Nothing here writes: `previewInvoice` hands the modal an `onConfirm` that
+   * only the licensed path ever calls.
+   */
   private startInvoiceFlow(): void {
     if (this.readOnly) {
       new Notice("Time data is open read-only — update the plugin before issuing invoices.");
@@ -297,9 +379,9 @@ export default class TimeTrackerPlugin extends Plugin {
   }
 
   private previewInvoice(client: string, period: BillingPeriod | null): void {
-    const rateMinor = parseRateToMinor(this.settings.defaultHourlyRate, this.settings.currency);
+    const rateMinor = this.rateMinor();
     if (rateMinor === null) {
-      new Notice("The default hourly rate is not a valid amount. Fix it in settings first.");
+      new Notice(RATE_UNUSABLE);
       return;
     }
 
@@ -330,6 +412,15 @@ export default class TimeTrackerPlugin extends Plugin {
         number: preview.number,
         currency: this.settings.currency,
         periodLabel: period ? periodRangeLabel(period) : null,
+      },
+      {
+        licensed: this.settings.isPro,
+        upsell: {
+          purchaseUrl: this.settings.purchaseUrl,
+          // Verified in place, so a buyer who has just paid never has to go
+          // looking for the settings pane with their key in the clipboard.
+          activate: (key) => this.activateLicense(key),
+        },
       },
       // The number shown above is a preview. It is claimed for real inside
       // issueInvoice, against the ledger as it stands at that moment — two
@@ -457,6 +548,8 @@ export default class TimeTrackerPlugin extends Plugin {
     this.settings.invoiceSeq = seq + 1;
     await this.store.addInvoice(record);
 
+    this.syncTicker();
+
     const file = this.app.vault.getAbstractFileByPath(written.markdownPath);
     if (file instanceof TFile) {
       await this.app.workspace.getLeaf(false).openFile(file);
@@ -502,6 +595,8 @@ export default class TimeTrackerPlugin extends Plugin {
     new InvoicePickModal(this.app, items, (id) => {
       void (async () => {
         const voided = await this.store.voidInvoice(id);
+        // Those hours are unbilled again, and the status bar says so.
+        this.syncTicker();
         new Notice(
           voided
             ? "Invoice voided. Its hours are billable again; the invoice file was left untouched."
@@ -514,6 +609,28 @@ export default class TimeTrackerPlugin extends Plugin {
   // ----------------------------------------------------------------------
   // License (offline Ed25519)
   // ----------------------------------------------------------------------
+
+  /**
+   * Take a key, verify it, keep it if it is good.
+   *
+   * Returns whether premium is active afterwards so a caller can carry on in
+   * place. An invalid paste is rejected without touching the stored key: a
+   * licensed user who mistypes into this field must not lose the license they
+   * already have.
+   */
+  activateLicense(key: string): boolean {
+    const trimmed = key.trim();
+    if (!trimmed) return false;
+    const result = LicenseManager.verify(trimmed);
+    if (!result.valid) return false;
+
+    this.settings.licenseKey = trimmed;
+    this.settings.isPro = true;
+    this.settings.licenseEmail = result.email ?? "";
+    void this.saveAll();
+    new Notice("Premium active. Invoicing and PDF export are unlocked.");
+    return true;
+  }
 
   /** Pure: updates in-memory state only. Callers decide when to persist. */
   refreshLicense(): void {
@@ -561,13 +678,29 @@ export default class TimeTrackerPlugin extends Plugin {
     const active = this.store?.getActiveTimer();
     const text = active
       ? `${formatDuration(Math.max(0, Date.now() - active.start))} · ${active.client}`
-      : "Not tracking";
+      : this.idleStatusText();
     // Only touch the DOM when the text actually changed.
     if (text !== this.statusBarText) {
       this.statusBarText = text;
       this.statusBar.setText(text);
     }
     this.statusBar.toggleClass("tti-tracking", active !== null);
+  }
+
+  /**
+   * What the status bar says when nothing is running.
+   *
+   * "Not tracking" is true and useless. If there are unbilled hours sitting in
+   * the ledger, that is the fact worth a glance — and it costs nothing, since
+   * this is only recomputed when the state changes. Nothing ticks while idle.
+   */
+  private idleStatusText(): string {
+    const unbilled = this.store ? this.unbilledSecondsFor(null) : 0;
+    if (unbilled < UNBILLED_FLOOR_SECONDS) return "Not tracking";
+    const amount = this.amountFor(unbilled);
+    return amount
+      ? `${formatHours(unbilled)}h unbilled · ${amount}`
+      : `${formatHours(unbilled)}h unbilled`;
   }
 
   // ----------------------------------------------------------------------

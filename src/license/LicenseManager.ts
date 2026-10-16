@@ -12,10 +12,11 @@ import { LICENSE_PUBLIC_KEY } from "./publicKey";
  *
  * This mirrors the proven approach in the Vault Spotlight plugin.
  *
- * TODO(billing): The *delivery* side (taking a payment, then emailing the key)
- * is handled out-of-band by Lemon Squeezy / Gumroad. After a sale, run:
+ * The *delivery* side (taking a payment, then sending the key) is out-of-band:
+ * checkout is the URL in src/product.ts, and after a sale the key is minted
+ * with
  *     npm run license:generate -- customer@email.com
- * and send the key. No plugin code change is needed to wire a storefront.
+ * No plugin code changes when the storefront does.
  */
 export interface LicensePayload {
 	product: string;

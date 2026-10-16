@@ -1,3 +1,5 @@
+import { PURCHASE_URL } from "./product";
+
 /** A single tracked time interval against a note. */
 export interface TimeEntry {
   id: string;
@@ -110,7 +112,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560212",
+  purchaseUrl: PURCHASE_URL,
   defaultHourlyRate: 100,
   currency: "USD",
   clientProperty: "client",

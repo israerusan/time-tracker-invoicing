@@ -1,9 +1,9 @@
 {
 	"id": "time-tracker-invoicing",
 	"name": "Time Tracker and Invoicing",
-	"version": "2.0.1",
+	"version": "2.1.0",
 	"minAppVersion": "1.5.0",
-	"description": "Track billable time against notes and projects, aggregate by client, and generate invoices in markdown and PDF. Free time tracking plus license-gated invoicing. Fully local.",
+	"description": "Clock billable time on the note you have open, total it by client, and turn unbilled hours into a markdown or PDF invoice. Fully local timesheets for freelancers and consultants who bill by the hour.",
 	"author": "israerusan",
 	"authorUrl": "https://github.com/israerusan",
 	"fundingUrl": "https://buymeacoffee.com/vaultspotlight/e/560212",

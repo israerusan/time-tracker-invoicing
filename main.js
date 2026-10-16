@@ -2273,12 +2273,17 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian4 = require("obsidian");
 
+// src/product.ts
+var PREMIUM_PRICE = "$29";
+var PREMIUM_TERMS = "$29 one-time, offline key, no account, no subscription.";
+var PURCHASE_URL = "https://buymeacoffee.com/vaultspotlight/e/560212";
+
 // src/types.ts
 var DEFAULT_SETTINGS = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560212",
+  purchaseUrl: PURCHASE_URL,
   defaultHourlyRate: 100,
   currency: "USD",
   clientProperty: "client",
@@ -4120,14 +4125,19 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
       status.createEl("p", { text: `Premium active${who} \u2014 invoicing and PDF export unlocked.` });
     } else {
       status.createEl("p", {
-        text: "Lite tier active. Time tracking is fully available; invoicing and PDF export need a license."
+        text: "Lite tier active. Time tracking is fully available; writing an invoice needs a key."
+      });
+      status.createEl("p", {
+        text: "Run Generate invoice first \u2014 the preview shows your own lines and total before you decide.",
+        cls: "tti-muted"
       });
       const link = status.createEl("a", {
-        text: "Get Time Tracker and Invoicing premium",
+        text: `Unlock invoicing \u2014 ${PREMIUM_PRICE} one-time`,
         href: this.plugin.settings.purchaseUrl
       });
       link.setAttr("target", "_blank");
       link.setAttr("rel", "noopener");
+      status.createEl("p", { text: PREMIUM_TERMS, cls: "tti-muted" });
     }
     new import_obsidian2.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for premium upgrades.").addText(
       (text) => text.setPlaceholder(DEFAULT_SETTINGS.purchaseUrl).setValue(this.plugin.settings.purchaseUrl).onChange((value) => {
@@ -4190,8 +4200,20 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
   }
   // ---------------------------------------------------------------- invoicing
   renderInvoicing(containerEl) {
-    new import_obsidian2.Setting(containerEl).setName("Invoicing (Premium)").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Invoicing").setHeading();
     const isPro = this.plugin.settings.isPro;
+    if (!isPro) {
+      const locked = containerEl.createDiv({ cls: "tti-locked-note" });
+      locked.createEl("p", {
+        text: "These all appear on the invoice itself \u2014 your name and address as the sender, your payment terms, and where the file is written. None of them is needed to preview an invoice: run Generate invoice and the preview shows your lines and your total from the hours you have already tracked."
+      });
+      const link = locked.createEl("a", {
+        text: `Unlock invoicing \u2014 ${PREMIUM_PRICE} one-time`,
+        href: this.plugin.settings.purchaseUrl
+      });
+      link.setAttr("target", "_blank");
+      link.setAttr("rel", "noopener");
+    }
     const premium = (name, desc, render) => {
       const setting = new import_obsidian2.Setting(containerEl).setName(name).setDesc(desc);
       if (!isPro) {
@@ -4672,14 +4694,21 @@ var CustomPeriodModal = class extends import_obsidian3.Modal {
   }
 };
 var ConfirmInvoiceModal = class extends import_obsidian3.Modal {
-  constructor(app, draft, meta, onConfirm) {
+  constructor(app, draft, meta, opts, onConfirm) {
     super(app);
+    this.pastedKey = "";
     this.draft = draft;
     this.meta = meta;
+    this.licensed = opts.licensed;
+    this.upsell = opts.upsell;
     this.onConfirm = onConfirm;
   }
   onOpen() {
+    this.renderPreview();
+  }
+  renderPreview() {
     const { contentEl } = this;
+    contentEl.empty();
     contentEl.addClass("tti-confirm");
     contentEl.createEl("h3", { text: `Invoice ${this.meta.number} \u2014 ${this.meta.client}` });
     contentEl.createEl("p", {
@@ -4724,10 +4753,77 @@ var ConfirmInvoiceModal = class extends import_obsidian3.Modal {
     }
     new import_obsidian3.Setting(contentEl).addButton(
       (b) => b.setButtonText("Issue invoice").setCta().onClick(() => {
+        if (!this.licensed) {
+          this.renderUpsell();
+          return;
+        }
         this.close();
         this.onConfirm();
       })
     ).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  /**
+   * The ask, with their own total in the title.
+   *
+   * Only ever reached from a preview that has lines and a non-zero total, so
+   * the figure quoted here is money they are actually owed.
+   */
+  renderUpsell() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("tti-upsell");
+    const total = formatMoney(this.draft.totalMinor, this.meta.currency);
+    const count = this.draft.lines.length;
+    contentEl.createEl("h3", { text: `Invoice ${this.meta.client} for ${total}` });
+    contentEl.createEl("p", {
+      text: `${count} line${count === 1 ? "" : "s"}, ${formatHours(this.draft.totalSeconds)}h, ${total}. Premium writes this into your vault as a numbered invoice and records which hours it billed, so the same hour is never billed twice.`
+    });
+    contentEl.createEl("p", { text: PREMIUM_TERMS, cls: "tti-upsell-terms" });
+    const buy = contentEl.createEl("a", {
+      text: `Buy a key \u2014 ${PREMIUM_PRICE} one-time`,
+      href: this.upsell.purchaseUrl,
+      cls: "tti-upsell-buy"
+    });
+    buy.setAttr("target", "_blank");
+    buy.setAttr("rel", "noopener");
+    let keyArea = null;
+    new import_obsidian3.Setting(contentEl).addButton(
+      (b) => b.setButtonText("I have a key").onClick(() => {
+        if (keyArea) this.renderKeyEntry(keyArea);
+      })
+    ).addButton(
+      (b) => b.setButtonText("Back to the preview").onClick(() => this.renderPreview())
+    );
+    keyArea = contentEl.createDiv({ cls: "tti-upsell-key" });
+  }
+  renderKeyEntry(container) {
+    container.empty();
+    const status = container.createDiv({ cls: "tti-error" });
+    new import_obsidian3.Setting(container).setName("License key").setDesc("Verified offline, right here - no account, no server.").addText((t) => {
+      t.setPlaceholder("payload.signature").setValue(this.pastedKey);
+      t.onChange((value) => {
+        this.pastedKey = value;
+      });
+      t.inputEl.addEventListener("blur", () => this.tryActivate(status));
+    });
+    new import_obsidian3.Setting(container).addButton(
+      (b) => b.setButtonText("Activate").setCta().onClick(() => this.tryActivate(status))
+    );
+  }
+  tryActivate(status) {
+    const key = this.pastedKey.trim();
+    if (!key) {
+      status.setText("Paste the key from your purchase email.");
+      return;
+    }
+    if (this.upsell.activate(key)) {
+      this.licensed = true;
+      this.renderPreview();
+      return;
+    }
+    status.setText(
+      "That key could not be verified. Check the whole key was pasted, including the part after the dot."
+    );
   }
   onClose() {
     this.contentEl.empty();
@@ -4754,6 +4850,8 @@ var InvoicePickModal = class extends import_obsidian3.FuzzySuggestModal {
 // src/main.ts
 var TICK_MS = 1e3;
 var SAVE_DEBOUNCE_MS = 400;
+var UNBILLED_FLOOR_SECONDS = 60;
+var RATE_UNUSABLE = "The default hourly rate is not a valid amount \u2014 fix it in settings.";
 var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
@@ -4816,16 +4914,12 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     });
     this.addCommand({
       id: "generate-invoice",
-      name: "Generate invoice (Premium)",
-      checkCallback: (checking) => {
-        if (!this.settings.isPro) return false;
-        if (!checking) this.startInvoiceFlow();
-        return true;
-      }
+      name: "Generate invoice",
+      callback: () => this.startInvoiceFlow()
     });
     this.addCommand({
       id: "void-invoice",
-      name: "Void an issued invoice (Premium)",
+      name: "Void an issued invoice",
       checkCallback: (checking) => {
         if (!this.settings.isPro) return false;
         if (!checking) this.startVoidFlow();
@@ -4932,7 +5026,7 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     }
     const entry = await this.store.stop(Date.now());
     if (entry) {
-      new import_obsidian4.Notice(`Stopped. Logged ${formatHours(TimeStore.entrySeconds(entry))}h to ${entry.client}.`);
+      new import_obsidian4.Notice(this.stopMessage(entry), 1e4);
     }
     this.syncTicker();
   }
@@ -4947,20 +5041,77 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     if (this.store.isRunning()) void this.stopTracking();
     else void this.startTracking();
   }
+  /**
+   * What a stopped timer is worth, not just how long it ran.
+   *
+   * Hours are an input; the number that makes somebody invoice is the amount.
+   * The rate is never guessed: if it is not a usable figure the hours are
+   * still reported and the rate is named as the thing to fix.
+   */
+  stopMessage(entry) {
+    const parts = [
+      `Stopped. Logged ${formatHours(TimeStore.entrySeconds(entry))}h to ${entry.client}.`
+    ];
+    const unbilled = this.unbilledSecondsFor(entry.client);
+    if (unbilled >= UNBILLED_FLOOR_SECONDS) {
+      const amount = this.amountFor(unbilled);
+      parts.push(
+        amount ? `${formatHours(unbilled)}h unbilled for ${entry.client} \u2014 ${amount}.` : `${formatHours(unbilled)}h unbilled for ${entry.client}. ${RATE_UNUSABLE}`
+      );
+    }
+    if (entry.client === this.settings.defaultClient && this.store.getEntries().length === 1) {
+      parts.push(
+        `Set a "${this.settings.clientProperty}" property on the note, or change Default client in settings.`
+      );
+    }
+    return parts.join(" ");
+  }
   showTotals() {
     const totals = this.store.totalsByClient();
     if (totals.length === 0) {
       new import_obsidian4.Notice("No tracked time yet.");
       return;
     }
-    const lines = totals.map(
-      (t) => `${t.client}: ${formatHours(t.unbilledSeconds)}h unbilled (${formatHours(t.totalSeconds)}h tracked)`
-    );
-    new import_obsidian4.Notice("Tracked time by client:\n" + lines.join("\n"), 8e3);
+    const lines = totals.map((t) => {
+      const amount = this.amountFor(t.unbilledSeconds);
+      return `${t.client}: ${formatHours(t.unbilledSeconds)}h unbilled${amount ? ` \u2014 ${amount}` : ""} (${formatHours(t.totalSeconds)}h tracked)`;
+    });
+    if (this.rateMinor() === null) {
+      lines.push(RATE_UNUSABLE);
+    }
+    new import_obsidian4.Notice("Unbilled time by client:\n" + lines.join("\n"), 15e3);
+  }
+  /** Still-billable seconds for one client, or for every client. */
+  unbilledSecondsFor(client) {
+    var _a, _b;
+    const totals = this.store.totalsByClient();
+    if (client === null) {
+      return totals.reduce((sum, t) => sum + t.unbilledSeconds, 0);
+    }
+    return (_b = (_a = totals.find((t) => t.client === client)) == null ? void 0 : _a.unbilledSeconds) != null ? _b : 0;
+  }
+  /** The default rate in integer minor units, or null if it cannot be used. */
+  rateMinor() {
+    return parseRateToMinor(this.settings.defaultHourlyRate, this.settings.currency);
+  }
+  /**
+   * What a block of unbilled time is worth at the default rate, or null when
+   * the rate is not a usable amount. Never invents a figure.
+   */
+  amountFor(seconds) {
+    const rateMinor = this.rateMinor();
+    if (rateMinor === null) return null;
+    return formatMoney(amountMinor(Math.round(seconds), rateMinor), this.settings.currency);
   }
   // ----------------------------------------------------------------------
   // Invoicing (premium)
   // ----------------------------------------------------------------------
+  /**
+   * Pick a client, pick a period, see the bill. Open to both tiers.
+   *
+   * Nothing here writes: `previewInvoice` hands the modal an `onConfirm` that
+   * only the licensed path ever calls.
+   */
   startInvoiceFlow() {
     if (this.readOnly) {
       new import_obsidian4.Notice("Time data is open read-only \u2014 update the plugin before issuing invoices.");
@@ -4978,9 +5129,9 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     }).open();
   }
   previewInvoice(client, period) {
-    const rateMinor = parseRateToMinor(this.settings.defaultHourlyRate, this.settings.currency);
+    const rateMinor = this.rateMinor();
     if (rateMinor === null) {
-      new import_obsidian4.Notice("The default hourly rate is not a valid amount. Fix it in settings first.");
+      new import_obsidian4.Notice(RATE_UNUSABLE);
       return;
     }
     const draft = buildDraft({
@@ -5008,6 +5159,15 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
         number: preview.number,
         currency: this.settings.currency,
         periodLabel: period ? periodRangeLabel(period) : null
+      },
+      {
+        licensed: this.settings.isPro,
+        upsell: {
+          purchaseUrl: this.settings.purchaseUrl,
+          // Verified in place, so a buyer who has just paid never has to go
+          // looking for the settings pane with their key in the clipboard.
+          activate: (key) => this.activateLicense(key)
+        }
       },
       // The number shown above is a preview. It is claimed for real inside
       // issueInvoice, against the ledger as it stands at that moment — two
@@ -5101,6 +5261,7 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     this.pendingIssue = null;
     this.settings.invoiceSeq = seq + 1;
     await this.store.addInvoice(record);
+    this.syncTicker();
     const file = this.app.vault.getAbstractFileByPath(written.markdownPath);
     if (file instanceof import_obsidian4.TFile) {
       await this.app.workspace.getLeaf(false).openFile(file);
@@ -5136,6 +5297,7 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     new InvoicePickModal(this.app, items, (id) => {
       void (async () => {
         const voided = await this.store.voidInvoice(id);
+        this.syncTicker();
         new import_obsidian4.Notice(
           voided ? "Invoice voided. Its hours are billable again; the invoice file was left untouched." : "That invoice could not be voided."
         );
@@ -5145,6 +5307,27 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
   // ----------------------------------------------------------------------
   // License (offline Ed25519)
   // ----------------------------------------------------------------------
+  /**
+   * Take a key, verify it, keep it if it is good.
+   *
+   * Returns whether premium is active afterwards so a caller can carry on in
+   * place. An invalid paste is rejected without touching the stored key: a
+   * licensed user who mistypes into this field must not lose the license they
+   * already have.
+   */
+  activateLicense(key) {
+    var _a;
+    const trimmed = key.trim();
+    if (!trimmed) return false;
+    const result = LicenseManager.verify(trimmed);
+    if (!result.valid) return false;
+    this.settings.licenseKey = trimmed;
+    this.settings.isPro = true;
+    this.settings.licenseEmail = (_a = result.email) != null ? _a : "";
+    void this.saveAll();
+    new import_obsidian4.Notice("Premium active. Invoicing and PDF export are unlocked.");
+    return true;
+  }
   /** Pure: updates in-memory state only. Callers decide when to persist. */
   refreshLicense() {
     var _a;
@@ -5188,12 +5371,25 @@ var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
     var _a;
     if (!this.statusBar) return;
     const active = (_a = this.store) == null ? void 0 : _a.getActiveTimer();
-    const text = active ? `${formatDuration(Math.max(0, Date.now() - active.start))} \xB7 ${active.client}` : "Not tracking";
+    const text = active ? `${formatDuration(Math.max(0, Date.now() - active.start))} \xB7 ${active.client}` : this.idleStatusText();
     if (text !== this.statusBarText) {
       this.statusBarText = text;
       this.statusBar.setText(text);
     }
     this.statusBar.toggleClass("tti-tracking", active !== null);
+  }
+  /**
+   * What the status bar says when nothing is running.
+   *
+   * "Not tracking" is true and useless. If there are unbilled hours sitting in
+   * the ledger, that is the fact worth a glance — and it costs nothing, since
+   * this is only recomputed when the state changes. Nothing ticks while idle.
+   */
+  idleStatusText() {
+    const unbilled = this.store ? this.unbilledSecondsFor(null) : 0;
+    if (unbilled < UNBILLED_FLOOR_SECONDS) return "Not tracking";
+    const amount = this.amountFor(unbilled);
+    return amount ? `${formatHours(unbilled)}h unbilled \xB7 ${amount}` : `${formatHours(unbilled)}h unbilled`;
   }
   // ----------------------------------------------------------------------
   // Persistence

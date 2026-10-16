@@ -1,7 +1,7 @@
 {
 	"name": "time-tracker-invoicing",
-	"version": "2.0.1",
-	"description": "Track billable time against notes/projects and generate invoices — for freelancers and consultants. Fully local.",
+	"version": "2.1.0",
+	"description": "Clock billable time on the note you have open, total it by client, and turn unbilled hours into a markdown or PDF invoice. Fully local.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {
@@ -18,9 +18,12 @@
 		"obsidian",
 		"plugin",
 		"time-tracking",
+		"timesheet",
 		"invoicing",
+		"invoice",
 		"freelance",
-		"billable"
+		"billable",
+		"hourly"
 	],
 	"author": "iavil",
 	"license": "MIT",

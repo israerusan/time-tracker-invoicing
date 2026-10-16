@@ -3,6 +3,65 @@
 All notable changes to Time Tracker and Invoicing are documented here. This
 project follows [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-10-16
+
+The paid half was invisible to the people who had not bought it. "Generate
+invoice" was hidden behind the license check, so a free user never saw the one
+screen that makes the case — their own hours, priced, totalled, about to become
+an invoice. The gate has moved from the preview to the write.
+
+### Changed
+- **The invoice preview is free.** `Generate invoice` is available on both
+  tiers. A Lite user picks a client and a period and sees the same
+  confirmation dialog a paying user sees: every line, the hours, the total in
+  their currency, computed from their own ledger. Confirming it does not write
+  anything — the same button leads to the offer, with their amount in the
+  title, the price, a link to checkout, and a key field that verifies in place
+  so somebody who has just paid never has to go hunting through the settings
+  pane. The vault and the allocation record are still only ever touched after a
+  valid key, because a write with no allocation record is an hour that can be
+  billed a second time.
+- **Stopping a timer says what it is worth.** The notice now carries the
+  client's unbilled amount at the default rate, not only the hours. If the rate
+  is not a usable number it reports the hours and names the rate as the thing
+  to fix, rather than printing a figure nobody can stand behind.
+- **`Show tracked time totals` shows money**, per client, alongside unbilled
+  and tracked hours — and stays up for 15 seconds instead of 8, which was not
+  long enough to read more than one client off.
+- **The idle status bar shows what is sitting unbilled** instead of "Not
+  tracking", once there is at least a minute of it. Nothing ticks while idle;
+  it is recomputed only when the state changes.
+- **The locked invoicing settings explain themselves.** They are the fields
+  that *appear on* the invoice, and the section says so and links to the same
+  purchase URL. The rate, currency, rounding and client/project mapping stay
+  free, so a free user can make the preview true.
+- **First stop on an untagged note** says once where the time went and how to
+  tag it, instead of leaving "Unassigned" unexplained. Nothing blocks the first
+  timer.
+- `Void an issued invoice` stays premium-only and hidden without a license: it
+  is not a preview of anything.
+- Manifest description rewritten around what people search for — clocking
+  billable time on the open note, totals by client, unbilled hours into an
+  invoice. The seller's phrase "license-gated" is gone.
+- README lede rewritten: the problem, what is free, the price, the buy link.
+  "Open-core" is gone, and the keygen commands, the Ed25519 note and the
+  project tree have moved under **Maintainer** at the bottom, off the screen a
+  buyer reads.
+
+### Added
+- `src/product.ts` — the price and the checkout URL in one place, so the
+  settings pane, the in-preview offer and the README cannot drift apart.
+- `docs/assets/hero-shot.md` — what to capture for the README's hero image. The
+  slot is still empty: it was not possible to drive Obsidian from the
+  environment this was written in, and a mock-up would have been a claim about
+  the plugin's appearance that nobody had checked.
+
+### Internal
+- Tests cover the split: a Lite user reaches the preview, sees their total,
+  and writes nothing (the hours stay billable); a pasted key activates inside
+  the dialog and the confirm then writes; a broken rate never produces an
+  invented amount. 104 tests, up from 98.
+
 ## [2.0.1] - 2026-10-16
 
 The Obsidian-facing half of 2.0.0 had been typechecked and linted but never

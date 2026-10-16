@@ -1,6 +1,7 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { DEFAULT_SETTINGS } from "./types";
 import { formatHours } from "./core/money";
+import { PREMIUM_PRICE, PREMIUM_TERMS } from "./product";
 import type TimeTrackerPlugin from "./main";
 
 /**
@@ -76,14 +77,23 @@ export class TimeTrackerSettingTab extends PluginSettingTab {
       status.createEl("p", {
         text:
           "Lite tier active. Time tracking is fully available; " +
-          "invoicing and PDF export need a license.",
+          "writing an invoice needs a key.",
+      });
+      // Point at the preview before pointing at the checkout: the invoice
+      // computed from their own hours is a better argument than this pane is.
+      status.createEl("p", {
+        text:
+          "Run Generate invoice first — the preview shows your own lines and " +
+          "total before you decide.",
+        cls: "tti-muted",
       });
       const link = status.createEl("a", {
-        text: "Get Time Tracker and Invoicing premium",
+        text: `Unlock invoicing — ${PREMIUM_PRICE} one-time`,
         href: this.plugin.settings.purchaseUrl,
       });
       link.setAttr("target", "_blank");
       link.setAttr("rel", "noopener");
+      status.createEl("p", { text: PREMIUM_TERMS, cls: "tti-muted" });
     }
 
     new Setting(containerEl)
@@ -184,9 +194,29 @@ export class TimeTrackerSettingTab extends PluginSettingTab {
   // ---------------------------------------------------------------- invoicing
 
   private renderInvoicing(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName("Invoicing (Premium)").setHeading();
+    new Setting(containerEl).setName("Invoicing").setHeading();
 
     const isPro = this.plugin.settings.isPro;
+    if (!isPro) {
+      // Nobody should be asked to type their business address before they have
+      // seen what an invoice would come to. These fields are what *appears on*
+      // the invoice, and the preview works without any of them.
+      const locked = containerEl.createDiv({ cls: "tti-locked-note" });
+      locked.createEl("p", {
+        text:
+          "These all appear on the invoice itself — your name and address " +
+          "as the sender, your payment terms, and where the file is written. " +
+          "None of them is needed to preview an invoice: run Generate invoice " +
+          "and the preview shows your lines and your total from the hours you " +
+          "have already tracked.",
+      });
+      const link = locked.createEl("a", {
+        text: `Unlock invoicing — ${PREMIUM_PRICE} one-time`,
+        href: this.plugin.settings.purchaseUrl,
+      });
+      link.setAttr("target", "_blank");
+      link.setAttr("rel", "noopener");
+    }
     const premium = (name: string, desc: string, render: (setting: Setting) => void): void => {
       const setting = new Setting(containerEl).setName(name).setDesc(desc);
       if (!isPro) {
