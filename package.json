@@ -25,7 +25,7 @@
 		"billable",
 		"hourly"
 	],
-	"author": "iavil",
+	"author": "Israel Avila",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^24.0.0",
