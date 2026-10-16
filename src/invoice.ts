@@ -1,13 +1,31 @@
-import { App, Notice, TFile, normalizePath } from "obsidian";
-import { ClientAggregate, TimeStore } from "./timeStore";
-import { InvoiceLineItem, PluginSettings } from "./types";
+import { App, TFile, TFolder, normalizePath } from "obsidian";
+import { InvoiceDocument } from "./core/invoiceModel";
+import { renderInvoiceMarkdown } from "./core/markdown";
+import { fileNameComponent } from "./core/text";
+import { findUnsupported, renderInvoicePdf } from "./pdf/invoicePdf";
+import { PageSizeName } from "./pdf/pdfWriter";
+import { InvoiceRecord, PluginSettings } from "./types";
 
 /**
- * Invoice generation (PREMIUM).
- * Builds markdown invoices from aggregated time and writes them into the vault.
- * PDF export is stubbed (see exportPdfStub).
+ * Writing invoices into the vault.
+ *
+ * The one rule this file enforces is **create-only**. The previous version
+ * built a filename from the year, the month and the first six letters of the
+ * client, then called `vault.modify()` when that path already existed — so
+ * issuing a deposit invoice and a final invoice to the same client in the same
+ * month silently overwrote the first with the second. An invoice that has been
+ * sent is a record of what somebody was asked to pay; it is never edited in
+ * place here. A correction is a new invoice, and the old one is voided.
  */
-export class InvoiceGenerator {
+
+export interface WrittenInvoice {
+  markdownPath: string;
+  pdfPath: string | null;
+  /** Set when the Markdown was written but the PDF could not be. */
+  pdfError: string | null;
+}
+
+export class InvoiceWriter {
   private app: App;
   private settings: PluginSettings;
 
@@ -16,136 +34,131 @@ export class InvoiceGenerator {
     this.settings = settings;
   }
 
-  /** Round hours per the configured granularity. */
-  private roundHours(hours: number): number {
-    const step = this.settings.roundHoursTo;
-    if (!step || step <= 0) return Math.round(hours * 100) / 100;
-    return Math.round(hours / step) * step;
-  }
+  /**
+   * The next free invoice number, starting from the stored sequence.
+   * Skips any number already used by a record or already present on disk, so
+   * a restored backup or a hand-made file can never be overwritten.
+   */
+  nextNumber(issuedAt: number, existing: readonly InvoiceRecord[], client: string): {
+    number: string;
+    seq: number;
+  } {
+    const year = new Date(issuedAt).getFullYear();
+    // Voided invoices keep their number. A voided invoice may already have been
+    // sent to a client, and two different documents sharing one number is how
+    // a billing dispute starts.
+    const used = new Set(existing.map((i) => i.number));
+    let seq = Math.max(1, Math.floor(this.settings.invoiceSeq));
 
-  private money(amount: number): string {
-    return `${this.settings.currency} ${amount.toFixed(2)}`;
-  }
-
-  /** Build invoice line items (one per project) for a client aggregate. */
-  buildLineItems(agg: ClientAggregate, rate: number): InvoiceLineItem[] {
-    const items: InvoiceLineItem[] = [];
-    for (const [project, rawHours] of agg.byProject) {
-      const hours = this.roundHours(rawHours);
-      items.push({
-        description: project || "General",
-        hours,
-        rate,
-        amount: Math.round(hours * rate * 100) / 100,
-      });
+    // Bounded so a pathological vault cannot spin here.
+    for (let attempt = 0; attempt < 10_000; attempt++) {
+      const number = `${year}-${String(seq).padStart(4, "0")}`;
+      if (!used.has(number) && !this.pathExists(this.markdownPathFor(number, client))) {
+        return { number, seq };
+      }
+      seq += 1;
     }
-    return items.sort((a, b) => b.amount - a.amount);
+    throw new Error("Could not find an unused invoice number. Check the invoice folder.");
   }
 
-  /** Render a markdown invoice. `invoiceNumber` and `dateLabel` are passed in. */
-  renderMarkdown(opts: {
-    client: string;
-    items: InvoiceLineItem[];
-    invoiceNumber: string;
-    dateLabel: string;
-  }): string {
-    const { client, items, invoiceNumber, dateLabel } = opts;
-    const subtotal = items.reduce((s, i) => s + i.amount, 0);
-    const totalHours = items.reduce((s, i) => s + i.hours, 0);
-    const s = this.settings;
+  private markdownPathFor(number: string, client: string): string {
+    const folder = normalizePath(this.settings.invoiceFolder || "Invoices");
+    const name = fileNameComponent(`Invoice ${number} - ${client}`, `Invoice ${number}`);
+    return normalizePath(`${folder}/${name}.md`);
+  }
 
-    const lines: string[] = [];
-    lines.push("---");
-    lines.push(`invoice: "${invoiceNumber}"`);
-    lines.push(`client: "${client}"`);
-    lines.push(`date: "${dateLabel}"`);
-    lines.push(`total: ${subtotal.toFixed(2)}`);
-    lines.push(`currency: "${s.currency}"`);
-    lines.push("---");
-    lines.push("");
-    lines.push(`# Invoice ${invoiceNumber}`);
-    lines.push("");
-    lines.push(`**From:** ${s.businessName}`);
-    if (s.businessAddress) lines.push(`${s.businessAddress}`);
-    if (s.businessEmail) lines.push(`${s.businessEmail}`);
-    lines.push("");
-    lines.push(`**Bill to:** ${client}`);
-    lines.push("");
-    lines.push(`**Date:** ${dateLabel}`);
-    lines.push("");
-    lines.push("| Description | Hours | Rate | Amount |");
-    lines.push("| --- | ---: | ---: | ---: |");
-    for (const i of items) {
-      lines.push(
-        `| ${i.description} | ${i.hours.toFixed(2)} | ${this.money(i.rate)} | ${this.money(i.amount)} |`
-      );
-    }
-    lines.push(`| **Total** | **${totalHours.toFixed(2)}** | | **${this.money(subtotal)}** |`);
-    lines.push("");
-    lines.push(`**Amount due: ${this.money(subtotal)}**`);
-    lines.push("");
-    return lines.join("\n");
+  private pdfPathFor(markdownPath: string): string {
+    return markdownPath.replace(/\.md$/, ".pdf");
+  }
+
+  private pathExists(path: string): boolean {
+    return this.app.vault.getAbstractFileByPath(path) !== null;
   }
 
   /**
-   * Generate an invoice file for a client and write it into the vault.
-   * Returns the created TFile.
+   * Write the Markdown invoice, and the PDF when enabled.
+   *
+   * The Markdown is written first and is the source of record: if PDF
+   * rendering refuses (a client name outside the font's encoding, say), the
+   * invoice still exists and the reason is returned rather than thrown away.
    */
-  async generateForClient(opts: {
-    store: TimeStore;
-    client: string;
-    rate: number;
-    invoiceNumber: string;
-    dateLabel: string;
-  }): Promise<TFile | null> {
-    const { store, client, rate, invoiceNumber, dateLabel } = opts;
-    const aggs = store.aggregateByClient({ client });
-    if (aggs.length === 0 || aggs[0].totalHours === 0) {
-      new Notice(`No tracked time found for "${client}".`);
-      return null;
-    }
-
-    const items = this.buildLineItems(aggs[0], rate);
-    const md = this.renderMarkdown({ client, items, invoiceNumber, dateLabel });
-
+  async write(
+    doc: InvoiceDocument,
+    opts: { exportPdf: boolean; pageSize: PageSizeName; createdAt: Date; creator: string }
+  ): Promise<WrittenInvoice> {
     const folder = normalizePath(this.settings.invoiceFolder || "Invoices");
     await this.ensureFolder(folder);
 
-    const safeClient = client.replace(/[\\/:*?"<>|]/g, "-");
-    const path = normalizePath(`${folder}/Invoice ${invoiceNumber} - ${safeClient}.md`);
-
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof TFile) {
-      await this.app.vault.modify(existing, md);
-      return existing;
+    const markdownPath = this.markdownPathFor(doc.number, doc.client);
+    if (this.pathExists(markdownPath)) {
+      throw new Error(`"${markdownPath}" already exists. Nothing was overwritten.`);
     }
-    return await this.app.vault.create(path, md);
-  }
+    await this.app.vault.create(markdownPath, renderInvoiceMarkdown(doc));
 
-  private async ensureFolder(folder: string): Promise<void> {
-    const existing = this.app.vault.getAbstractFileByPath(folder);
-    if (existing) return;
+    if (!opts.exportPdf) {
+      return { markdownPath, pdfPath: null, pdfError: null };
+    }
+
+    const pdfPath = this.pdfPathFor(markdownPath);
+    if (this.pathExists(pdfPath)) {
+      return {
+        markdownPath,
+        pdfPath: null,
+        pdfError: `"${pdfPath}" already exists, so no PDF was written.`,
+      };
+    }
+
     try {
-      await this.app.vault.createFolder(folder);
-    } catch {
-      // Folder may have been created concurrently — ignore.
+      const bytes = renderInvoicePdf(doc, {
+        pageSize: opts.pageSize,
+        createdAt: opts.createdAt,
+        creator: opts.creator,
+      });
+      // `createBinary` needs an ArrayBuffer backing exactly these bytes.
+      const buffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      ) as ArrayBuffer;
+      await this.app.vault.createBinary(pdfPath, buffer);
+      return { markdownPath, pdfPath, pdfError: null };
+    } catch (error) {
+      return {
+        markdownPath,
+        pdfPath: null,
+        pdfError: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
-  /**
-   * PDF export STUB.
-   *
-   * TODO(pdf): Implement real PDF export. Options:
-   *   - Render the invoice note via Obsidian's built-in "Export to PDF"
-   *     (workspace command) once the note is open.
-   *   - Bundle a lightweight generator (e.g. jsPDF / pdfmake) and draw the
-   *     line items directly. Keep it fully local — no external API.
-   * For now we surface a Notice so the command is wired end-to-end.
-   */
-  async exportPdfStub(invoiceFile: TFile): Promise<void> {
-    new Notice(
-      `PDF export is coming soon. Invoice saved as markdown: ${invoiceFile.path}\n` +
-        `Tip: open it and use Obsidian's "Export to PDF" in the meantime.`
-    );
+  /** Characters in this invoice the PDF font cannot draw, if any. */
+  static unsupportedForPdf(doc: InvoiceDocument): string[] {
+    return findUnsupported(doc).map((f) => `${f.label}: ${f.characters.join(" ")}`);
+  }
+
+  /** Create `folder` and any missing parents. */
+  private async ensureFolder(folder: string): Promise<void> {
+    const segments = folder.split("/").filter(Boolean);
+    let path = "";
+    for (const segment of segments) {
+      path = path ? `${path}/${segment}` : segment;
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (existing instanceof TFolder) continue;
+      if (existing instanceof TFile) {
+        throw new Error(`"${path}" is a file, so invoices cannot be written there.`);
+      }
+      try {
+        await this.app.vault.createFolder(path);
+      } catch (error) {
+        // A concurrent creation (another window, a sync client) is the outcome
+        // we wanted anyway — but only if a folder is actually there now.
+        // Anything else is a real failure and must not be mistaken for one.
+        if (!(this.app.vault.getAbstractFileByPath(path) instanceof TFolder)) {
+          throw new Error(
+            `Could not create the invoice folder "${path}": ` +
+              `${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }
   }
 }

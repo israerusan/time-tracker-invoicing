@@ -27,3 +27,72 @@
 .tti-setting-locked {
   opacity: 0.55;
 }
+
+/* Period picker suggestions */
+.tti-suggest-title {
+  font-weight: 600;
+}
+
+.tti-suggest-desc {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+/* Invoice confirmation */
+.tti-confirm-sub {
+  color: var(--text-muted);
+  margin-top: -8px;
+}
+
+.tti-confirm-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+
+.tti-confirm-table th,
+.tti-confirm-table td {
+  padding: 4px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tti-confirm-table th:nth-child(2),
+.tti-confirm-table td:nth-child(2),
+.tti-confirm-table th:nth-child(3),
+.tti-confirm-table td:nth-child(3) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tti-confirm-table tfoot th {
+  border-bottom: none;
+  border-top: 2px solid var(--background-modifier-border);
+}
+
+.tti-warning {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--text-warning);
+  background: var(--background-secondary);
+  font-size: 0.9em;
+}
+
+.tti-error {
+  color: var(--text-error);
+  min-height: 1.2em;
+  font-size: 0.9em;
+}
+
+.tti-readonly {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--text-warning);
+  background: var(--background-secondary);
+}
+
+.tti-invoice-summary {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  margin: 4px 0 12px;
+}

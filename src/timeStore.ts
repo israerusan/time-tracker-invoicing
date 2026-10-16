@@ -1,36 +1,51 @@
-import { ActiveTimer, TimeEntry } from "./types";
+import { newEntryId } from "./core/ids";
+import { allocatedIntervalsByEntry } from "./core/invoiceModel";
+import { durationMs, subtract } from "./core/intervals";
+import { ActiveTimer, InvoiceRecord, TimeEntry } from "./types";
 
-/** Aggregated totals for one client (optionally broken down by project). */
-export interface ClientAggregate {
+/** Totals for one client, in seconds. */
+export interface ClientTotals {
   client: string;
-  totalHours: number;
-  byProject: Map<string, number>; // project -> hours
-  entries: TimeEntry[];
+  /** All completed tracked time. */
+  totalSeconds: number;
+  /** Time not yet allocated to any invoice that still counts. */
+  unbilledSeconds: number;
+  byProject: Map<string, number>;
 }
 
 /**
- * TimeStore — owns the list of time entries and the single active timer.
- * Persistence is delegated to the caller via the `onChange` callback so this
- * class stays decoupled from Obsidian's data API.
+ * TimeStore — owns the entries, the single active timer, and the issued
+ * invoices. Persistence is delegated to the caller through `onChange` so this
+ * class stays free of Obsidian's data API and can be exercised directly.
+ *
+ * Invoices live here rather than in the invoice generator because eligibility
+ * for billing is a property of the ledger as a whole: what an entry still owes
+ * depends on every invoice ever issued, not on the one being written.
  */
 export class TimeStore {
   private entries: TimeEntry[];
   private active: ActiveTimer | null;
+  private invoices: InvoiceRecord[];
   private onChange: () => Promise<void>;
-  private idCounter = 0;
 
   constructor(
     entries: TimeEntry[],
     active: ActiveTimer | null,
+    invoices: InvoiceRecord[],
     onChange: () => Promise<void>
   ) {
     this.entries = entries;
     this.active = active;
+    this.invoices = invoices;
     this.onChange = onChange;
   }
 
-  getEntries(): TimeEntry[] {
+  getEntries(): readonly TimeEntry[] {
     return this.entries;
+  }
+
+  getInvoices(): readonly InvoiceRecord[] {
+    return this.invoices;
   }
 
   getActiveTimer(): ActiveTimer | null {
@@ -39,13 +54,6 @@ export class TimeStore {
 
   isRunning(): boolean {
     return this.active !== null;
-  }
-
-  private newId(): string {
-    // Avoid Date.now()/Math.random() reliance for determinism in tests; use a
-    // monotonic counter combined with the entry count.
-    this.idCounter += 1;
-    return `te_${this.entries.length}_${this.idCounter}`;
   }
 
   /** Start tracking. Throws if a timer is already running. */
@@ -60,7 +68,7 @@ export class TimeStore {
       throw new Error("A timer is already running. Stop it first.");
     }
     this.active = {
-      entryId: this.newId(),
+      entryId: newEntryId(),
       filePath: opts.filePath,
       fileName: opts.fileName,
       client: opts.client,
@@ -81,7 +89,7 @@ export class TimeStore {
       client: this.active.client,
       project: this.active.project,
       start: this.active.start,
-      end,
+      end: Math.max(end, this.active.start),
     };
     this.entries.push(entry);
     this.active = null;
@@ -95,58 +103,101 @@ export class TimeStore {
     await this.onChange();
   }
 
+  /** Record an issued invoice. Allocations are what prevent re-billing. */
+  async addInvoice(invoice: InvoiceRecord): Promise<void> {
+    this.invoices.push(invoice);
+    await this.onChange();
+  }
+
+  /** Mark an invoice void, returning its hours to the billable pool. */
+  async voidInvoice(invoiceId: string): Promise<boolean> {
+    const invoice = this.invoices.find((i) => i.id === invoiceId);
+    if (!invoice || invoice.voided) return false;
+    invoice.voided = true;
+    await this.onChange();
+    return true;
+  }
+
+  /** Update the stored paths after the invoice files are written. */
+  async setInvoicePaths(
+    invoiceId: string,
+    paths: { markdownPath?: string | null; pdfPath?: string | null }
+  ): Promise<void> {
+    const invoice = this.invoices.find((i) => i.id === invoiceId);
+    if (!invoice) return;
+    if (paths.markdownPath !== undefined) invoice.markdownPath = paths.markdownPath;
+    if (paths.pdfPath !== undefined) invoice.pdfPath = paths.pdfPath;
+    await this.onChange();
+  }
+
+  /** Follow a note rename so entries keep pointing at the note they describe. */
+  async retargetEntries(oldPath: string, newPath: string, newBasename: string): Promise<void> {
+    let touched = false;
+    for (const entry of this.entries) {
+      if (entry.filePath !== oldPath) continue;
+      entry.filePath = newPath;
+      entry.fileName = newBasename;
+      touched = true;
+    }
+    if (this.active?.filePath === oldPath) {
+      this.active.filePath = newPath;
+      this.active.fileName = newBasename;
+      touched = true;
+    }
+    if (touched) await this.onChange();
+  }
+
   /** Duration of the running timer in ms (0 if none). */
   runningElapsedMs(now: number): number {
     if (!this.active) return 0;
     return Math.max(0, now - this.active.start);
   }
 
-  /** Hours for a completed entry. */
-  static entryHours(entry: TimeEntry): number {
+  /** Seconds for a completed entry. */
+  static entrySeconds(entry: TimeEntry): number {
     if (entry.end === null) return 0;
-    return Math.max(0, (entry.end - entry.start) / 3_600_000);
+    return Math.max(0, (entry.end - entry.start) / 1000);
   }
 
   /**
-   * Aggregate completed entries by client, then by project.
-   * Optionally filter to a single client and/or a date range (epoch ms).
+   * Totals per client, split into tracked and still-unbilled.
+   * "Unbilled" subtracts the seconds already allocated to live invoices, so it
+   * answers the question the user actually has: what is left to invoice.
    */
-  aggregateByClient(filter?: {
-    client?: string;
-    from?: number;
-    to?: number;
-  }): ClientAggregate[] {
-    const map = new Map<string, ClientAggregate>();
+  totalsByClient(): ClientTotals[] {
+    const billed = allocatedIntervalsByEntry(this.invoices);
+    const map = new Map<string, ClientTotals>();
 
     for (const entry of this.entries) {
       if (entry.end === null) continue;
-      if (filter?.client && entry.client !== filter.client) continue;
-      if (filter?.from !== undefined && entry.start < filter.from) continue;
-      if (filter?.to !== undefined && entry.start > filter.to) continue;
+      const seconds = TimeStore.entrySeconds(entry);
+      if (seconds <= 0) continue;
 
-      const hours = TimeStore.entryHours(entry);
-      let agg = map.get(entry.client);
-      if (!agg) {
-        agg = {
+      let totals = map.get(entry.client);
+      if (!totals) {
+        totals = {
           client: entry.client,
-          totalHours: 0,
+          totalSeconds: 0,
+          unbilledSeconds: 0,
           byProject: new Map(),
-          entries: [],
         };
-        map.set(entry.client, agg);
+        map.set(entry.client, totals);
       }
-      agg.totalHours += hours;
-      agg.byProject.set(entry.project, (agg.byProject.get(entry.project) ?? 0) + hours);
-      agg.entries.push(entry);
+      // What is left is the entry's span minus the intervals already billed,
+      // which is robust to allocations that overlap each other.
+      const free = subtract({ from: entry.start, to: entry.end }, billed.get(entry.id) ?? []);
+      const unbilled = durationMs(free) / 1000;
+      totals.totalSeconds += seconds;
+      totals.unbilledSeconds += unbilled;
+      const project = entry.project.trim() || "General";
+      totals.byProject.set(project, (totals.byProject.get(project) ?? 0) + seconds);
     }
 
-    return Array.from(map.values()).sort((a, b) => b.totalHours - a.totalHours);
+    return Array.from(map.values()).sort((a, b) => b.unbilledSeconds - a.unbilledSeconds);
   }
 
-  /** List of distinct clients with recorded time. */
+  /** Clients with recorded time, most unbilled first. */
   listClients(): string[] {
-    const set = new Set<string>();
-    for (const e of this.entries) if (e.end !== null) set.add(e.client);
-    return Array.from(set).sort();
+    return this.totalsByClient().map((t) => t.client);
   }
 }

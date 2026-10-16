@@ -1,202 +1,326 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { DEFAULT_SETTINGS } from "./types";
+import { formatHours } from "./core/money";
 import type TimeTrackerPlugin from "./main";
 
+/**
+ * Settings.
+ *
+ * Two things here are deliberate rather than incidental:
+ *
+ *  - No `onChange` writes to disk directly. Each one updates memory and asks
+ *    the plugin to save after a short quiet period. The previous version
+ *    serialised the entire ledger — settings, every time entry, the running
+ *    timer — once per keystroke, so typing a 60-character address wrote the
+ *    whole database sixty times.
+ *  - The license field is verified when you leave it, not while you type.
+ *    Verifying per keystroke meant re-rendering the whole settings pane on
+ *    every character, which threw focus out of the field being typed into.
+ */
 export class TimeTrackerSettingTab extends PluginSettingTab {
-	plugin: TimeTrackerPlugin;
+  plugin: TimeTrackerPlugin;
 
-	constructor(app: App, plugin: TimeTrackerPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
+  constructor(app: App, plugin: TimeTrackerPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
 
-		// ---- License ---------------------------------------------------------
-		new Setting(containerEl).setName("License").setHeading();
+    if (this.plugin.isReadOnly()) {
+      const warning = containerEl.createDiv({ cls: "tti-readonly" });
+      warning.createEl("p", {
+        text:
+          "This vault's time data was written by a newer version of this plugin. " +
+          "It is open read-only and nothing will be saved. Update the plugin to continue.",
+      });
+    }
 
-		new Setting(containerEl)
-			.setName("License key")
-			.setDesc("Enter your premium license key. Verified offline — no account or server required.")
-			.addText((text) =>
-				text
-					.setPlaceholder("payload.signature")
-					.setValue(this.plugin.settings.licenseKey)
-					.onChange((value) => {
-						this.plugin.settings.licenseKey = value;
-						void this.plugin.refreshLicense().then(() => this.display());
-					})
-			);
+    this.renderLicense(containerEl);
+    this.renderBilling(containerEl);
+    this.renderMapping(containerEl);
+    this.renderInvoicing(containerEl);
+    this.renderFeedback(containerEl);
+  }
 
-		const status = containerEl.createDiv({ cls: "tti-license-status" });
-		if (this.plugin.settings.isPro) {
-			status.createEl("p", {
-				text: `✅ Premium active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""} — invoicing & PDF export unlocked.`,
-			});
-		} else {
-			status.createEl("p", {
-				text: "🔓 Lite tier active. Time tracking is fully available; upgrade to unlock invoicing & PDF export.",
-			});
-			const link = status.createEl("a", {
-				text: "Get Time Tracker & Invoicing premium",
-				href: this.plugin.settings.purchaseUrl,
-			});
-			link.setAttr("target", "_blank");
-		}
+  // ------------------------------------------------------------------ license
 
-		new Setting(containerEl)
-			.setName("Purchase page URL")
-			.setDesc("Link shown for premium upgrades.")
-			.addText((text) =>
-				text
-					.setPlaceholder("https://your-store.com/product")
-					.setValue(this.plugin.settings.purchaseUrl)
-					.onChange((value) => {
-						this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
-						void this.plugin.saveAll();
-					})
-			);
+  private renderLicense(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("License").setHeading();
 
-		// ---- Billing defaults ------------------------------------------------
-		new Setting(containerEl).setName("Billing").setHeading();
+    new Setting(containerEl)
+      .setName("License key")
+      .setDesc("Verified offline — no account or server required. Checked when you leave the field.")
+      .addText((text) => {
+        text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey);
+        text.onChange((value) => {
+          this.plugin.settings.licenseKey = value;
+          this.plugin.requestSave();
+        });
+        text.inputEl.addEventListener("blur", () => {
+          this.plugin.refreshLicense();
+          void this.plugin.saveAll();
+          this.display();
+        });
+      });
 
-		new Setting(containerEl)
-			.setName("Default hourly rate")
-			.setDesc("Used for invoice line items.")
-			.addText((t) =>
-				t.setValue(String(this.plugin.settings.defaultHourlyRate)).onChange((v) => {
-					const n = Number(v);
-					if (!isNaN(n) && n >= 0) {
-						this.plugin.settings.defaultHourlyRate = n;
-						void this.plugin.saveAll();
-					}
-				})
-			);
+    const status = containerEl.createDiv({ cls: "tti-license-status" });
+    if (this.plugin.settings.isPro) {
+      const who = this.plugin.settings.licenseEmail
+        ? ` (${this.plugin.settings.licenseEmail})`
+        : "";
+      status.createEl("p", { text: `Premium active${who} — invoicing and PDF export unlocked.` });
+    } else {
+      status.createEl("p", {
+        text:
+          "Lite tier active. Time tracking is fully available; " +
+          "invoicing and PDF export need a license.",
+      });
+      const link = status.createEl("a", {
+        text: "Get Time Tracker and Invoicing premium",
+        href: this.plugin.settings.purchaseUrl,
+      });
+      link.setAttr("target", "_blank");
+      link.setAttr("rel", "noopener");
+    }
 
-		new Setting(containerEl)
-			.setName("Currency")
-			.setDesc("Currency code or symbol shown on invoices (e.g. USD, EUR, £).")
-			.addText((t) =>
-				t.setValue(this.plugin.settings.currency).onChange((v) => {
-					this.plugin.settings.currency = v.trim() || "USD";
-					void this.plugin.saveAll();
-				})
-			);
+    new Setting(containerEl)
+      .setName("Purchase page URL")
+      .setDesc("Link shown for premium upgrades.")
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_SETTINGS.purchaseUrl)
+          .setValue(this.plugin.settings.purchaseUrl)
+          .onChange((value) => {
+            this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
+            this.plugin.requestSave();
+          })
+      );
+  }
 
-		new Setting(containerEl)
-			.setName("Round hours to")
-			.setDesc("Billing increment in hours (e.g. 0.25 = nearest 15 min, 0 = no rounding).")
-			.addText((t) =>
-				t.setValue(String(this.plugin.settings.roundHoursTo)).onChange((v) => {
-					const n = Number(v);
-					if (!isNaN(n) && n >= 0) {
-						this.plugin.settings.roundHoursTo = n;
-						void this.plugin.saveAll();
-					}
-				})
-			);
+  // ------------------------------------------------------------------ billing
 
-		// ---- Client/project mapping -----------------------------------------
-		new Setting(containerEl).setName("Client & project mapping").setHeading();
+  private renderBilling(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Billing").setHeading();
 
-		new Setting(containerEl)
-			.setName("Client frontmatter property")
-			.setDesc("Note property read to tag tracked time with a client.")
-			.addText((t) =>
-				t.setValue(this.plugin.settings.clientProperty).onChange((v) => {
-					this.plugin.settings.clientProperty = v.trim() || "client";
-					void this.plugin.saveAll();
-				})
-			);
+    new Setting(containerEl)
+      .setName("Default hourly rate")
+      .setDesc("Used for invoice line items. Snapshotted onto each invoice when it is issued.")
+      .addText((t) =>
+        t.setValue(String(this.plugin.settings.defaultHourlyRate)).onChange((v) => {
+          const n = Number(v.trim().replace(",", "."));
+          if (Number.isFinite(n) && n >= 0) {
+            this.plugin.settings.defaultHourlyRate = n;
+            this.plugin.requestSave();
+          }
+        })
+      );
 
-		new Setting(containerEl)
-			.setName("Project frontmatter property")
-			.setDesc("Note property read to tag tracked time with a project.")
-			.addText((t) =>
-				t.setValue(this.plugin.settings.projectProperty).onChange((v) => {
-					this.plugin.settings.projectProperty = v.trim() || "project";
-					void this.plugin.saveAll();
-				})
-			);
+    new Setting(containerEl)
+      .setName("Currency")
+      .setDesc("Code or symbol shown on invoices (e.g. USD, EUR, GBP). Codes set the decimal places.")
+      .addText((t) =>
+        t.setValue(this.plugin.settings.currency).onChange((v) => {
+          this.plugin.settings.currency = v.trim() || DEFAULT_SETTINGS.currency;
+          this.plugin.requestSave();
+        })
+      );
 
-		new Setting(containerEl)
-			.setName("Default client")
-			.setDesc("Used when a note has no client property.")
-			.addText((t) =>
-				t.setValue(this.plugin.settings.defaultClient).onChange((v) => {
-					this.plugin.settings.defaultClient = v.trim() || "Unassigned";
-					void this.plugin.saveAll();
-				})
-			);
+    new Setting(containerEl)
+      .setName("Round hours to")
+      .setDesc(
+        "Billing increment in hours (0.25 = nearest 15 min, 0 = no rounding). " +
+          "Applied per line item. A short entry can round to zero; the invoice preview says so."
+      )
+      .addText((t) =>
+        t.setValue(String(this.plugin.settings.roundHoursTo)).onChange((v) => {
+          const n = Number(v.trim().replace(",", "."));
+          if (Number.isFinite(n) && n >= 0) {
+            this.plugin.settings.roundHoursTo = n;
+            this.plugin.requestSave();
+          }
+        })
+      );
+  }
 
-		// ---- Business identity (premium: appears on invoices) ----------------
-		new Setting(containerEl).setName("Invoicing (Premium)").setHeading();
+  // ------------------------------------------------------------------ mapping
 
-		// Gate invoice-only settings inline — same pattern as Vault Spotlight's
-		// proSearch() helper: locked rows show a "(Premium)" hint until licensed.
-		const premium = (name: string, desc: string, render: (setting: Setting) => void) => {
-			const setting = new Setting(containerEl).setName(name).setDesc(desc);
-			if (!this.plugin.settings.isPro) {
-				setting.settingEl.addClass("tti-setting-locked");
-				setting.descEl.appendText(" (Premium)");
-				return;
-			}
-			render(setting);
-		};
+  private renderMapping(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Client and project mapping").setHeading();
 
-		premium("Business name", "Shown as the sender on generated invoices.", (s) => {
-			s.addText((t) =>
-				t.setValue(this.plugin.settings.businessName).onChange((v) => {
-					this.plugin.settings.businessName = v;
-					void this.plugin.saveAll();
-				})
-			);
-		});
+    new Setting(containerEl)
+      .setName("Client property")
+      .setDesc("Note property read to tag tracked time with a client.")
+      .addText((t) =>
+        t.setValue(this.plugin.settings.clientProperty).onChange((v) => {
+          this.plugin.settings.clientProperty = v.trim() || DEFAULT_SETTINGS.clientProperty;
+          this.plugin.requestSave();
+        })
+      );
 
-		premium("Business address", "Shown under your business name.", (s) => {
-			s.addTextArea((t) =>
-				t.setValue(this.plugin.settings.businessAddress).onChange((v) => {
-					this.plugin.settings.businessAddress = v;
-					void this.plugin.saveAll();
-				})
-			);
-		});
+    new Setting(containerEl)
+      .setName("Project property")
+      .setDesc("Note property read to tag tracked time with a project.")
+      .addText((t) =>
+        t.setValue(this.plugin.settings.projectProperty).onChange((v) => {
+          this.plugin.settings.projectProperty = v.trim() || DEFAULT_SETTINGS.projectProperty;
+          this.plugin.requestSave();
+        })
+      );
 
-		premium("Business email", "Contact email printed on invoices.", (s) => {
-			s.addText((t) =>
-				t.setValue(this.plugin.settings.businessEmail).onChange((v) => {
-					this.plugin.settings.businessEmail = v;
-					void this.plugin.saveAll();
-				})
-			);
-		});
+    new Setting(containerEl)
+      .setName("Default client")
+      .setDesc("Used when a note has no client property.")
+      .addText((t) =>
+        t.setValue(this.plugin.settings.defaultClient).onChange((v) => {
+          this.plugin.settings.defaultClient = v.trim() || DEFAULT_SETTINGS.defaultClient;
+          this.plugin.requestSave();
+        })
+      );
+  }
 
-		premium("Invoice folder", "Vault folder where generated invoices are saved.", (s) => {
-			s.addText((t) =>
-				t.setValue(this.plugin.settings.invoiceFolder).onChange((v) => {
-					this.plugin.settings.invoiceFolder = v.trim() || "Invoices";
-					void this.plugin.saveAll();
-				})
-			);
-		});
+  // ---------------------------------------------------------------- invoicing
 
-		// ---- Feedback --------------------------------------------------------
-		new Setting(containerEl).setName("Feedback").setHeading();
+  private renderInvoicing(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Invoicing (Premium)").setHeading();
 
-		new Setting(containerEl)
-			.setName("Bugs and feature requests")
-			.setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.")
-			.addButton((button) =>
-				button.setButtonText("Report a bug").onClick(() => {
-					window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
-				})
-			)
-			.addButton((button) =>
-				button.setButtonText("Request a feature").onClick(() => {
-					window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement");
-				})
-			);
-	}
+    const isPro = this.plugin.settings.isPro;
+    const premium = (name: string, desc: string, render: (setting: Setting) => void): void => {
+      const setting = new Setting(containerEl).setName(name).setDesc(desc);
+      if (!isPro) {
+        setting.settingEl.addClass("tti-setting-locked");
+        setting.descEl.appendText(" (Premium)");
+        return;
+      }
+      render(setting);
+    };
+
+    premium("Business name", "Shown as the sender on generated invoices.", (s) => {
+      s.addText((t) =>
+        t.setValue(this.plugin.settings.businessName).onChange((v) => {
+          this.plugin.settings.businessName = v;
+          this.plugin.requestSave();
+        })
+      );
+    });
+
+    premium("Business address", "Shown under your business name. One line per line.", (s) => {
+      s.addTextArea((t) =>
+        t.setValue(this.plugin.settings.businessAddress).onChange((v) => {
+          this.plugin.settings.businessAddress = v;
+          this.plugin.requestSave();
+        })
+      );
+    });
+
+    premium("Business email", "Contact email printed on invoices.", (s) => {
+      s.addText((t) =>
+        t.setValue(this.plugin.settings.businessEmail).onChange((v) => {
+          this.plugin.settings.businessEmail = v;
+          this.plugin.requestSave();
+        })
+      );
+    });
+
+    premium("Payment terms", "Printed under the amount due. Leave empty to omit.", (s) => {
+      s.addTextArea((t) =>
+        t
+          .setPlaceholder("Payment due within 14 days. Bank transfer to …")
+          .setValue(this.plugin.settings.paymentTerms)
+          .onChange((v) => {
+            this.plugin.settings.paymentTerms = v;
+            this.plugin.requestSave();
+          })
+      );
+    });
+
+    premium("Invoice folder", "Vault folder where invoices are written.", (s) => {
+      s.addText((t) =>
+        t.setValue(this.plugin.settings.invoiceFolder).onChange((v) => {
+          this.plugin.settings.invoiceFolder = v.trim() || DEFAULT_SETTINGS.invoiceFolder;
+          this.plugin.requestSave();
+        })
+      );
+    });
+
+    premium("Export a PDF as well", "Write a PDF next to each Markdown invoice.", (s) => {
+      s.addToggle((t) =>
+        t.setValue(this.plugin.settings.exportPdf).onChange((v) => {
+          this.plugin.settings.exportPdf = v;
+          this.plugin.requestSave();
+        })
+      );
+    });
+
+    premium("PDF page size", "Paper size for the exported PDF.", (s) => {
+      s.addDropdown((d) =>
+        d
+          .addOption("A4", "A4")
+          .addOption("Letter", "US Letter")
+          .setValue(this.plugin.settings.pdfPageSize)
+          .onChange((v) => {
+            this.plugin.settings.pdfPageSize = v === "Letter" ? "Letter" : "A4";
+            this.plugin.requestSave();
+          })
+      );
+    });
+
+    premium("Next invoice number", "The sequence used for the next invoice issued this year.", (s) => {
+      s.addText((t) =>
+        t.setValue(String(this.plugin.settings.invoiceSeq)).onChange((v) => {
+          const n = Math.floor(Number(v.trim()));
+          if (Number.isFinite(n) && n >= 1) {
+            this.plugin.settings.invoiceSeq = n;
+            this.plugin.requestSave();
+          }
+        })
+      );
+    });
+
+    if (isPro) {
+      this.renderInvoiceSummary(containerEl);
+    }
+  }
+
+  /** A short account of what has been issued, so the ledger is not invisible. */
+  private renderInvoiceSummary(containerEl: HTMLElement): void {
+    const invoices = this.plugin.store?.getInvoices() ?? [];
+    const live = invoices.filter((i) => !i.voided);
+    const summary = containerEl.createDiv({ cls: "tti-invoice-summary" });
+    if (live.length === 0) {
+      summary.createEl("p", { text: "No invoices issued yet." });
+      return;
+    }
+    const totalSeconds = live.reduce((s, i) => s + i.totalSeconds, 0);
+    summary.createEl("p", {
+      text:
+        `${live.length} invoice${live.length === 1 ? "" : "s"} issued, ` +
+        `covering ${formatHours(totalSeconds)}h. ` +
+        `Voided invoices return their hours to the billable pool.`,
+    });
+  }
+
+  // ----------------------------------------------------------------- feedback
+
+  private renderFeedback(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Feedback").setHeading();
+
+    new Setting(containerEl)
+      .setName("Bugs and feature requests")
+      .setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.")
+      .addButton((button) =>
+        button.setButtonText("Report a bug").onClick(() => {
+          window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=bug");
+        })
+      )
+      .addButton((button) =>
+        button.setButtonText("Request a feature").onClick(() => {
+          window.open(
+            "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement"
+          );
+        })
+      );
+  }
 }

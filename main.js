@@ -1953,29 +1953,29 @@ var require_nacl_fast = __commonJS({
         return smlen;
       }
       function unpackneg(r, p) {
-        var t = gf(), chk = gf(), num = gf(), den = gf(), den2 = gf(), den4 = gf(), den6 = gf();
+        var t = gf(), chk = gf(), num2 = gf(), den = gf(), den2 = gf(), den4 = gf(), den6 = gf();
         set25519(r[2], gf1);
         unpack25519(r[1], p);
-        S(num, r[1]);
-        M(den, num, D);
-        Z(num, num, r[2]);
+        S(num2, r[1]);
+        M(den, num2, D);
+        Z(num2, num2, r[2]);
         A(den, r[2], den);
         S(den2, den);
         S(den4, den2);
         M(den6, den4, den2);
-        M(t, den6, num);
+        M(t, den6, num2);
         M(t, t, den);
         pow2523(t, t);
-        M(t, t, num);
+        M(t, t, num2);
         M(t, t, den);
         M(t, t, den);
         M(r[0], t, den);
         S(chk, r[0]);
         M(chk, chk, den);
-        if (neq25519(chk, num)) M(r[0], r[0], I);
+        if (neq25519(chk, num2)) M(r[0], r[0], I);
         S(chk, r[0]);
         M(chk, chk, den);
-        if (neq25519(chk, num)) return -1;
+        if (neq25519(chk, num2)) return -1;
         if (par25519(r[0]) === p[31] >> 7) Z(r[0], gf0, r[0]);
         M(r[3], r[0], r[1]);
         return 0;
@@ -2271,7 +2271,7 @@ __export(main_exports, {
   default: () => TimeTrackerPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/types.ts
 var DEFAULT_SETTINGS = {
@@ -2288,8 +2288,13 @@ var DEFAULT_SETTINGS = {
   businessAddress: "",
   businessEmail: "",
   invoiceFolder: "Invoices",
-  roundHoursTo: 0.25
+  roundHoursTo: 0.25,
+  invoiceSeq: 1,
+  exportPdf: true,
+  pdfPageSize: "A4",
+  paymentTerms: ""
 };
+var CURRENT_SCHEMA = 2;
 
 // src/license/LicenseManager.ts
 var import_tweetnacl = __toESM(require_nacl_fast(), 1);
@@ -2338,16 +2343,353 @@ function base64ToBytes(value) {
   return bytes;
 }
 
+// src/core/ids.ts
+function randomToken() {
+  const bytes = new Uint8Array(16);
+  const cryptoObj = typeof globalThis !== "undefined" ? globalThis.crypto : void 0;
+  if (cryptoObj == null ? void 0 : cryptoObj.getRandomValues) {
+    cryptoObj.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  let hi = 0;
+  let lo = 0;
+  for (let i = 0; i < 8; i++) hi = hi * 256 + bytes[i];
+  for (let i = 8; i < 16; i++) lo = lo * 256 + bytes[i];
+  const a = Math.floor(hi / 2048) ^ lo % 2048;
+  const b = lo;
+  return a.toString(36).padStart(10, "0") + b.toString(36).padStart(11, "0");
+}
+function newEntryId() {
+  return `te_${randomToken()}`;
+}
+function newInvoiceId() {
+  return `inv_${randomToken()}`;
+}
+
+// src/core/intervals.ts
+function durationMs(intervals) {
+  let total = 0;
+  for (const i of intervals) total += Math.max(0, i.to - i.from);
+  return total;
+}
+function normalize(intervals) {
+  const valid = intervals.filter((i) => Number.isFinite(i.from) && Number.isFinite(i.to) && i.to > i.from).sort((a, b) => a.from - b.from);
+  const out = [];
+  for (const interval of valid) {
+    const last = out[out.length - 1];
+    if (last && interval.from <= last.to) {
+      last.to = Math.max(last.to, interval.to);
+    } else {
+      out.push({ from: interval.from, to: interval.to });
+    }
+  }
+  return out;
+}
+function intersect(base, window2) {
+  const from = Math.max(base.from, window2.from);
+  const to = Math.min(base.to, window2.to);
+  return to > from ? { from, to } : null;
+}
+function subtract(base, taken) {
+  let remaining = base.to > base.from ? [{ from: base.from, to: base.to }] : [];
+  for (const cut of normalize(taken)) {
+    const next = [];
+    for (const piece of remaining) {
+      if (cut.to <= piece.from || cut.from >= piece.to) {
+        next.push(piece);
+        continue;
+      }
+      if (cut.from > piece.from) next.push({ from: piece.from, to: cut.from });
+      if (cut.to < piece.to) next.push({ from: cut.to, to: piece.to });
+    }
+    remaining = next;
+    if (remaining.length === 0) break;
+  }
+  return remaining;
+}
+
+// src/core/money.ts
+var MINOR_UNIT_DIGITS = {
+  BIF: 0,
+  CLP: 0,
+  DJF: 0,
+  GNF: 0,
+  ISK: 0,
+  JPY: 0,
+  KMF: 0,
+  KRW: 0,
+  PYG: 0,
+  RWF: 0,
+  UGX: 0,
+  UYI: 0,
+  VND: 0,
+  VUV: 0,
+  XAF: 0,
+  XOF: 0,
+  XPF: 0,
+  BHD: 3,
+  IQD: 3,
+  JOD: 3,
+  KWD: 3,
+  LYD: 3,
+  OMR: 3,
+  TND: 3
+};
+function minorUnitDigits(currency) {
+  var _a;
+  const code = currency.trim().toUpperCase();
+  return (_a = MINOR_UNIT_DIGITS[code]) != null ? _a : 2;
+}
+function minorUnitScale(currency) {
+  return Math.pow(10, minorUnitDigits(currency));
+}
+function parseRateToMinor(input, currency) {
+  let n;
+  if (typeof input === "number") {
+    n = input;
+  } else {
+    const trimmed = input.trim();
+    if (trimmed === "") return null;
+    n = Number(trimmed.replace(",", "."));
+  }
+  if (!Number.isFinite(n) || n < 0) return null;
+  const scaled = Math.round(n * minorUnitScale(currency));
+  if (!Number.isSafeInteger(scaled)) return null;
+  return scaled;
+}
+function formatMoney(minor, currency) {
+  const digits = minorUnitDigits(currency);
+  const scale = Math.pow(10, digits);
+  const negative = minor < 0;
+  const abs = Math.abs(minor);
+  const whole = Math.floor(abs / scale);
+  const frac = abs % scale;
+  const body = digits === 0 ? String(whole) : `${whole}.${String(frac).padStart(digits, "0")}`;
+  return `${negative ? "-" : ""}${currency} ${body}`;
+}
+function formatHours(seconds) {
+  return (seconds / 3600).toFixed(2);
+}
+function roundSeconds(seconds, stepHours) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  if (!Number.isFinite(stepHours) || stepHours <= 0) return Math.round(seconds);
+  const stepSeconds = Math.round(stepHours * 3600);
+  if (stepSeconds <= 0) return Math.round(seconds);
+  return Math.floor(seconds / stepSeconds + 0.5) * stepSeconds;
+}
+function amountMinor(seconds, rateMinorPerHour) {
+  if (seconds <= 0 || rateMinorPerHour <= 0) return 0;
+  const product = seconds * rateMinorPerHour;
+  if (!Number.isSafeInteger(product)) {
+    return Math.round(seconds / 3600 * rateMinorPerHour);
+  }
+  return Math.floor(product / 3600 + 0.5);
+}
+function sumMinor(values) {
+  let total = 0;
+  for (const v of values) total += v;
+  return total;
+}
+
+// src/core/period.ts
+function monthPeriod(instant) {
+  const d = new Date(instant);
+  const from = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0).getTime();
+  const to = new Date(d.getFullYear(), d.getMonth() + 1, 1, 0, 0, 0, 0).getTime();
+  return { from, to, label: monthLabel(d.getFullYear(), d.getMonth()) };
+}
+function previousMonthPeriod(instant) {
+  const d = new Date(instant);
+  return monthPeriod(new Date(d.getFullYear(), d.getMonth() - 1, 15).getTime());
+}
+var MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+];
+function monthLabel(year, monthIndex) {
+  return `${MONTH_NAMES[monthIndex]} ${year}`;
+}
+function isoDate(instant) {
+  const d = new Date(instant);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function periodRangeLabel(period) {
+  return `${isoDate(period.from)} to ${isoDate(period.to - 1)}`;
+}
+function parseLocalDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const date = new Date(year, month - 1, day, 0, 0, 0, 0);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+  return date.getTime();
+}
+function nextLocalMidnight(instant) {
+  const d = new Date(instant);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0, 0).getTime();
+}
+
+// src/core/invoiceModel.ts
+function allocatedIntervalsByEntry(invoices) {
+  const out = /* @__PURE__ */ new Map();
+  for (const invoice of invoices) {
+    if (invoice.voided) continue;
+    for (const alloc of invoice.allocations) {
+      const list = out.get(alloc.entryId);
+      if (list) list.push({ from: alloc.from, to: alloc.to });
+      else out.set(alloc.entryId, [{ from: alloc.from, to: alloc.to }]);
+    }
+  }
+  for (const [id, list] of out) out.set(id, normalize(list));
+  return out;
+}
+function isBillable(entry) {
+  return entry.end !== null && entry.end > entry.start;
+}
+function buildDraft(opts) {
+  var _a, _b, _c, _d;
+  const {
+    entries,
+    invoices,
+    client,
+    period,
+    rateMinor,
+    roundHoursTo,
+    legacyUnknownBefore,
+    fallbackProject = "General"
+  } = opts;
+  const alreadyBilled = allocatedIntervalsByEntry(invoices);
+  const allocations = [];
+  const byProject = /* @__PURE__ */ new Map();
+  let legacyUnknownCount = 0;
+  let runningExcluded = 0;
+  const window2 = {
+    from: (_a = period == null ? void 0 : period.from) != null ? _a : Number.NEGATIVE_INFINITY,
+    to: (_b = period == null ? void 0 : period.to) != null ? _b : Number.POSITIVE_INFINITY
+  };
+  for (const entry of entries) {
+    if (entry.client !== client) continue;
+    if (!isBillable(entry)) {
+      if (entry.end === null) runningExcluded += 1;
+      continue;
+    }
+    const span = { from: entry.start, to: entry.end };
+    const inPeriod = intersect(span, window2);
+    if (!inPeriod) continue;
+    const free = subtract(inPeriod, (_c = alreadyBilled.get(entry.id)) != null ? _c : []);
+    const seconds = durationMs(free) / 1e3;
+    if (seconds <= 1e-3) continue;
+    if (legacyUnknownBefore !== null && entry.start < legacyUnknownBefore) {
+      legacyUnknownCount += 1;
+    }
+    for (const piece of free) {
+      allocations.push({ entryId: entry.id, from: piece.from, to: piece.to });
+    }
+    const project = entry.project.trim() || fallbackProject;
+    byProject.set(project, ((_d = byProject.get(project)) != null ? _d : 0) + seconds);
+  }
+  const lines = [];
+  for (const [project, rawSeconds] of byProject) {
+    const seconds = roundSeconds(rawSeconds, roundHoursTo);
+    lines.push({
+      description: project,
+      seconds,
+      rawSeconds,
+      rateMinor,
+      amountMinor: amountMinor(seconds, rateMinor),
+      roundedToZero: seconds === 0 && rawSeconds > 0
+    });
+  }
+  lines.sort((a, b) => b.amountMinor - a.amountMinor || a.description.localeCompare(b.description));
+  const billedSeconds = lines.reduce((s, l) => s + l.seconds, 0);
+  const consumedSeconds = lines.reduce((s, l) => s + l.rawSeconds, 0);
+  const roundingDeltaSeconds = billedSeconds - consumedSeconds;
+  const warnings = [];
+  if (runningExcluded > 0) {
+    warnings.push(
+      "A timer is still running and was not billed. Stop it first if those hours belong on this invoice."
+    );
+  }
+  const zeroed = lines.filter((l) => l.roundedToZero);
+  if (zeroed.length > 0) {
+    warnings.push(
+      `${zeroed.length} ${zeroed.length === 1 ? "line" : "lines"} rounded down to zero hours at the current ${roundHoursTo}h increment and will bill nothing: ${zeroed.map((l) => l.description).join(", ")}. Issuing marks that time as billed.`
+    );
+  }
+  if (Math.abs(roundingDeltaSeconds) >= 60) {
+    const direction = roundingDeltaSeconds > 0 ? "more" : "less";
+    warnings.push(
+      `Rounding to ${roundHoursTo}h bills ${formatHours(Math.abs(roundingDeltaSeconds))}h ${direction} than the ${formatHours(consumedSeconds)}h actually tracked.`
+    );
+  }
+  if (legacyUnknownCount > 0) {
+    warnings.push(
+      `${legacyUnknownCount} ${legacyUnknownCount === 1 ? "entry was" : "entries were"} recorded before this version began tracking which invoice billed them. They may already have been invoiced \u2014 check before sending.`
+    );
+  }
+  return {
+    lines,
+    allocations,
+    totalSeconds: billedSeconds,
+    totalMinor: sumMinor(lines.map((l) => l.amountMinor)),
+    roundingDeltaSeconds,
+    legacyUnknownCount,
+    warnings
+  };
+}
+function draftToDocument(draft, opts) {
+  const { number, client, issuedAt, period, settings } = opts;
+  return {
+    number,
+    client,
+    dateLabel: isoDate(issuedAt),
+    periodLabel: period ? periodRangeLabel(period) : null,
+    currency: settings.currency,
+    businessName: settings.businessName,
+    businessAddress: settings.businessAddress,
+    businessEmail: settings.businessEmail,
+    paymentTerms: settings.paymentTerms,
+    lines: draft.lines,
+    totalSeconds: draft.totalSeconds,
+    totalMinor: draft.totalMinor,
+    notes: draft.warnings
+  };
+}
+
 // src/timeStore.ts
 var TimeStore = class _TimeStore {
-  constructor(entries, active, onChange) {
-    this.idCounter = 0;
+  constructor(entries, active, invoices, onChange) {
     this.entries = entries;
     this.active = active;
+    this.invoices = invoices;
     this.onChange = onChange;
   }
   getEntries() {
     return this.entries;
+  }
+  getInvoices() {
+    return this.invoices;
   }
   getActiveTimer() {
     return this.active;
@@ -2355,17 +2697,13 @@ var TimeStore = class _TimeStore {
   isRunning() {
     return this.active !== null;
   }
-  newId() {
-    this.idCounter += 1;
-    return `te_${this.entries.length}_${this.idCounter}`;
-  }
   /** Start tracking. Throws if a timer is already running. */
   async start(opts) {
     if (this.active) {
       throw new Error("A timer is already running. Stop it first.");
     }
     this.active = {
-      entryId: this.newId(),
+      entryId: newEntryId(),
       filePath: opts.filePath,
       fileName: opts.fileName,
       client: opts.client,
@@ -2385,7 +2723,7 @@ var TimeStore = class _TimeStore {
       client: this.active.client,
       project: this.active.project,
       start: this.active.start,
-      end
+      end: Math.max(end, this.active.start)
     };
     this.entries.push(entry);
     this.active = null;
@@ -2397,168 +2735,1336 @@ var TimeStore = class _TimeStore {
     this.active = null;
     await this.onChange();
   }
+  /** Record an issued invoice. Allocations are what prevent re-billing. */
+  async addInvoice(invoice) {
+    this.invoices.push(invoice);
+    await this.onChange();
+  }
+  /** Mark an invoice void, returning its hours to the billable pool. */
+  async voidInvoice(invoiceId) {
+    const invoice = this.invoices.find((i) => i.id === invoiceId);
+    if (!invoice || invoice.voided) return false;
+    invoice.voided = true;
+    await this.onChange();
+    return true;
+  }
+  /** Update the stored paths after the invoice files are written. */
+  async setInvoicePaths(invoiceId, paths) {
+    const invoice = this.invoices.find((i) => i.id === invoiceId);
+    if (!invoice) return;
+    if (paths.markdownPath !== void 0) invoice.markdownPath = paths.markdownPath;
+    if (paths.pdfPath !== void 0) invoice.pdfPath = paths.pdfPath;
+    await this.onChange();
+  }
+  /** Follow a note rename so entries keep pointing at the note they describe. */
+  async retargetEntries(oldPath, newPath, newBasename) {
+    var _a;
+    let touched = false;
+    for (const entry of this.entries) {
+      if (entry.filePath !== oldPath) continue;
+      entry.filePath = newPath;
+      entry.fileName = newBasename;
+      touched = true;
+    }
+    if (((_a = this.active) == null ? void 0 : _a.filePath) === oldPath) {
+      this.active.filePath = newPath;
+      this.active.fileName = newBasename;
+      touched = true;
+    }
+    if (touched) await this.onChange();
+  }
   /** Duration of the running timer in ms (0 if none). */
   runningElapsedMs(now) {
     if (!this.active) return 0;
     return Math.max(0, now - this.active.start);
   }
-  /** Hours for a completed entry. */
-  static entryHours(entry) {
+  /** Seconds for a completed entry. */
+  static entrySeconds(entry) {
     if (entry.end === null) return 0;
-    return Math.max(0, (entry.end - entry.start) / 36e5);
+    return Math.max(0, (entry.end - entry.start) / 1e3);
   }
   /**
-   * Aggregate completed entries by client, then by project.
-   * Optionally filter to a single client and/or a date range (epoch ms).
+   * Totals per client, split into tracked and still-unbilled.
+   * "Unbilled" subtracts the seconds already allocated to live invoices, so it
+   * answers the question the user actually has: what is left to invoice.
    */
-  aggregateByClient(filter) {
-    var _a;
+  totalsByClient() {
+    var _a, _b;
+    const billed = allocatedIntervalsByEntry(this.invoices);
     const map = /* @__PURE__ */ new Map();
     for (const entry of this.entries) {
       if (entry.end === null) continue;
-      if ((filter == null ? void 0 : filter.client) && entry.client !== filter.client) continue;
-      if ((filter == null ? void 0 : filter.from) !== void 0 && entry.start < filter.from) continue;
-      if ((filter == null ? void 0 : filter.to) !== void 0 && entry.start > filter.to) continue;
-      const hours = _TimeStore.entryHours(entry);
-      let agg = map.get(entry.client);
-      if (!agg) {
-        agg = {
+      const seconds = _TimeStore.entrySeconds(entry);
+      if (seconds <= 0) continue;
+      let totals = map.get(entry.client);
+      if (!totals) {
+        totals = {
           client: entry.client,
-          totalHours: 0,
-          byProject: /* @__PURE__ */ new Map(),
-          entries: []
+          totalSeconds: 0,
+          unbilledSeconds: 0,
+          byProject: /* @__PURE__ */ new Map()
         };
-        map.set(entry.client, agg);
+        map.set(entry.client, totals);
       }
-      agg.totalHours += hours;
-      agg.byProject.set(entry.project, ((_a = agg.byProject.get(entry.project)) != null ? _a : 0) + hours);
-      agg.entries.push(entry);
+      const free = subtract({ from: entry.start, to: entry.end }, (_a = billed.get(entry.id)) != null ? _a : []);
+      const unbilled = durationMs(free) / 1e3;
+      totals.totalSeconds += seconds;
+      totals.unbilledSeconds += unbilled;
+      const project = entry.project.trim() || "General";
+      totals.byProject.set(project, ((_b = totals.byProject.get(project)) != null ? _b : 0) + seconds);
     }
-    return Array.from(map.values()).sort((a, b) => b.totalHours - a.totalHours);
+    return Array.from(map.values()).sort((a, b) => b.unbilledSeconds - a.unbilledSeconds);
   }
-  /** List of distinct clients with recorded time. */
+  /** Clients with recorded time, most unbilled first. */
   listClients() {
-    const set = /* @__PURE__ */ new Set();
-    for (const e of this.entries) if (e.end !== null) set.add(e.client);
-    return Array.from(set).sort();
+    return this.totalsByClient().map((t) => t.client);
   }
 };
 
 // src/invoice.ts
 var import_obsidian = require("obsidian");
-var InvoiceGenerator = class {
+
+// src/core/text.ts
+function yamlScalar(value) {
+  var _a;
+  let out = '"';
+  for (const ch of value) {
+    const code = (_a = ch.codePointAt(0)) != null ? _a : 0;
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "	") out += "\\t";
+    else if (code < 32 || code === 127) out += "\\x" + code.toString(16).padStart(2, "0");
+    else out += ch;
+  }
+  return out + '"';
+}
+function tableCell(value) {
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r\n|\r|\n/g, " ").trim();
+}
+var RESERVED = /* @__PURE__ */ new Set([
+  "CON",
+  "PRN",
+  "AUX",
+  "NUL",
+  "COM1",
+  "COM2",
+  "COM3",
+  "COM4",
+  "COM5",
+  "COM6",
+  "COM7",
+  "COM8",
+  "COM9",
+  "LPT1",
+  "LPT2",
+  "LPT3",
+  "LPT4",
+  "LPT5",
+  "LPT6",
+  "LPT7",
+  "LPT8",
+  "LPT9"
+]);
+function fileNameComponent(value, fallback = "Unnamed") {
+  var _a;
+  let out = "";
+  for (const ch of value) {
+    const code = (_a = ch.codePointAt(0)) != null ? _a : 0;
+    if (code < 32 || code === 127) out += " ";
+    else if ('\\/:*?"<>|'.includes(ch)) out += "-";
+    else out += ch;
+  }
+  out = out.replace(/\s+/g, " ").replace(/-{2,}/g, "-").trim();
+  out = out.replace(/\.{2,}/g, ".");
+  out = out.replace(/^[-. ]+/g, "").replace(/[-. ]+$/g, "");
+  if (RESERVED.has(out.toUpperCase())) out = `${out}_`;
+  if (out.length > 80) out = out.slice(0, 80).trim();
+  return out || fallback;
+}
+
+// src/core/markdown.ts
+function renderInvoiceMarkdown(doc) {
+  const lines = [];
+  lines.push("---");
+  lines.push(`invoice: ${yamlScalar(doc.number)}`);
+  lines.push(`client: ${yamlScalar(doc.client)}`);
+  lines.push(`date: ${yamlScalar(doc.dateLabel)}`);
+  if (doc.periodLabel) lines.push(`period: ${yamlScalar(doc.periodLabel)}`);
+  lines.push(`currency: ${yamlScalar(doc.currency)}`);
+  lines.push(
+    `total: ${(doc.totalMinor / minorUnitScale(doc.currency)).toFixed(minorUnitDigits(doc.currency))}`
+  );
+  lines.push(`hours: ${formatHours(doc.totalSeconds)}`);
+  lines.push("---");
+  lines.push("");
+  lines.push(`# Invoice ${doc.number}`);
+  lines.push("");
+  lines.push(`**From:** ${doc.businessName}`);
+  for (const addressLine of doc.businessAddress.split(/\r\n|\r|\n/)) {
+    if (addressLine.trim()) lines.push(addressLine.trim());
+  }
+  if (doc.businessEmail) lines.push(doc.businessEmail);
+  lines.push("");
+  lines.push(`**Bill to:** ${doc.client}`);
+  lines.push("");
+  lines.push(`**Date:** ${doc.dateLabel}`);
+  if (doc.periodLabel) {
+    lines.push("");
+    lines.push(`**Period:** ${doc.periodLabel}`);
+  }
+  lines.push("");
+  lines.push("| Description | Hours | Rate | Amount |");
+  lines.push("| --- | ---: | ---: | ---: |");
+  for (const line of doc.lines) {
+    lines.push(
+      `| ${tableCell(line.description)} | ${formatHours(line.seconds)} | ${formatMoney(line.rateMinor, doc.currency)} | ${formatMoney(line.amountMinor, doc.currency)} |`
+    );
+  }
+  lines.push(
+    `| **Total** | **${formatHours(doc.totalSeconds)}** | | **${formatMoney(doc.totalMinor, doc.currency)}** |`
+  );
+  lines.push("");
+  lines.push(`**Amount due: ${formatMoney(doc.totalMinor, doc.currency)}**`);
+  if (doc.paymentTerms.trim()) {
+    lines.push("");
+    lines.push(doc.paymentTerms.trim());
+  }
+  if (doc.notes.length > 0) {
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+    lines.push("> [!note] Notes recorded when this invoice was issued");
+    for (const note of doc.notes) lines.push(`> - ${note}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+// src/pdf/fontMetrics.ts
+var ASCII_REGULAR = [
+  278,
+  278,
+  355,
+  556,
+  556,
+  889,
+  667,
+  222,
+  333,
+  333,
+  389,
+  584,
+  278,
+  333,
+  278,
+  278,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  278,
+  278,
+  584,
+  584,
+  584,
+  556,
+  1015,
+  667,
+  667,
+  722,
+  722,
+  667,
+  611,
+  778,
+  722,
+  278,
+  500,
+  667,
+  556,
+  833,
+  722,
+  778,
+  667,
+  778,
+  722,
+  667,
+  611,
+  722,
+  667,
+  944,
+  667,
+  667,
+  611,
+  278,
+  278,
+  278,
+  469,
+  556,
+  222,
+  556,
+  556,
+  500,
+  556,
+  556,
+  278,
+  556,
+  556,
+  222,
+  222,
+  500,
+  222,
+  833,
+  556,
+  556,
+  556,
+  556,
+  333,
+  500,
+  278,
+  556,
+  500,
+  722,
+  500,
+  500,
+  500,
+  334,
+  260,
+  334,
+  584
+];
+var ASCII_BOLD = [
+  278,
+  333,
+  474,
+  556,
+  556,
+  889,
+  722,
+  278,
+  333,
+  333,
+  389,
+  584,
+  278,
+  333,
+  278,
+  278,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  556,
+  333,
+  333,
+  584,
+  584,
+  584,
+  611,
+  975,
+  722,
+  722,
+  722,
+  722,
+  667,
+  611,
+  778,
+  722,
+  278,
+  556,
+  722,
+  611,
+  833,
+  722,
+  778,
+  667,
+  778,
+  722,
+  667,
+  611,
+  722,
+  667,
+  944,
+  667,
+  667,
+  611,
+  333,
+  278,
+  333,
+  584,
+  556,
+  278,
+  556,
+  611,
+  556,
+  611,
+  556,
+  333,
+  611,
+  611,
+  278,
+  278,
+  556,
+  278,
+  889,
+  611,
+  611,
+  611,
+  611,
+  389,
+  556,
+  333,
+  611,
+  556,
+  778,
+  556,
+  556,
+  500,
+  389,
+  280,
+  389,
+  584
+];
+var SPECIAL_REGULAR = {
+  128: 556,
+  130: 222,
+  131: 556,
+  132: 333,
+  133: 1e3,
+  134: 556,
+  135: 556,
+  136: 333,
+  137: 1e3,
+  138: 667,
+  139: 333,
+  140: 1e3,
+  142: 611,
+  145: 222,
+  146: 222,
+  147: 333,
+  148: 333,
+  149: 350,
+  150: 556,
+  151: 1e3,
+  152: 333,
+  153: 1e3,
+  154: 500,
+  155: 333,
+  156: 944,
+  158: 500,
+  159: 667,
+  160: 278,
+  161: 333,
+  162: 556,
+  163: 556,
+  164: 556,
+  165: 556,
+  166: 260,
+  167: 556,
+  168: 333,
+  169: 737,
+  170: 370,
+  171: 556,
+  172: 584,
+  173: 333,
+  174: 737,
+  175: 333,
+  176: 400,
+  177: 584,
+  178: 333,
+  179: 333,
+  180: 333,
+  181: 556,
+  182: 537,
+  183: 278,
+  184: 333,
+  185: 333,
+  186: 365,
+  187: 556,
+  188: 834,
+  189: 834,
+  190: 834,
+  191: 611,
+  198: 1e3,
+  208: 556,
+  215: 584,
+  216: 778,
+  222: 556,
+  223: 611,
+  230: 889,
+  240: 556,
+  247: 584,
+  248: 611,
+  254: 556
+};
+var SPECIAL_BOLD = {
+  128: 556,
+  130: 278,
+  131: 556,
+  132: 500,
+  133: 1e3,
+  134: 556,
+  135: 556,
+  136: 333,
+  137: 1e3,
+  138: 667,
+  139: 333,
+  140: 1e3,
+  142: 611,
+  145: 278,
+  146: 278,
+  147: 500,
+  148: 500,
+  149: 350,
+  150: 556,
+  151: 1e3,
+  152: 333,
+  153: 1e3,
+  154: 556,
+  155: 333,
+  156: 944,
+  158: 500,
+  159: 667,
+  160: 278,
+  161: 333,
+  162: 556,
+  163: 556,
+  164: 556,
+  165: 556,
+  166: 280,
+  167: 556,
+  168: 333,
+  169: 737,
+  170: 370,
+  171: 556,
+  172: 584,
+  173: 333,
+  174: 737,
+  175: 333,
+  176: 400,
+  177: 584,
+  178: 333,
+  179: 333,
+  180: 333,
+  181: 611,
+  182: 556,
+  183: 278,
+  184: 333,
+  185: 333,
+  186: 365,
+  187: 556,
+  188: 834,
+  189: 834,
+  190: 834,
+  191: 611,
+  198: 1e3,
+  208: 611,
+  215: 584,
+  216: 778,
+  222: 611,
+  223: 611,
+  230: 889,
+  240: 611,
+  247: 584,
+  248: 611,
+  254: 611
+};
+var ACCENT_BASE = {
+  192: 65,
+  193: 65,
+  194: 65,
+  195: 65,
+  196: 65,
+  197: 65,
+  199: 67,
+  200: 69,
+  201: 69,
+  202: 69,
+  203: 69,
+  204: 73,
+  205: 73,
+  206: 73,
+  207: 73,
+  209: 78,
+  210: 79,
+  211: 79,
+  212: 79,
+  213: 79,
+  214: 79,
+  217: 85,
+  218: 85,
+  219: 85,
+  220: 85,
+  221: 89,
+  224: 97,
+  225: 97,
+  226: 97,
+  227: 97,
+  228: 97,
+  229: 97,
+  231: 99,
+  232: 101,
+  233: 101,
+  234: 101,
+  235: 101,
+  236: 105,
+  237: 105,
+  238: 105,
+  239: 105,
+  241: 110,
+  242: 111,
+  243: 111,
+  244: 111,
+  245: 111,
+  246: 111,
+  249: 117,
+  250: 117,
+  251: 117,
+  252: 117,
+  253: 121,
+  255: 121
+};
+function buildTable(ascii, specials) {
+  const widths = new Array(256).fill(0);
+  for (let i = 0; i < ascii.length; i++) widths[32 + i] = ascii[i];
+  for (const key of Object.keys(specials)) {
+    widths[Number(key)] = specials[Number(key)];
+  }
+  for (const key of Object.keys(ACCENT_BASE)) {
+    const code = Number(key);
+    if (widths[code] === 0) widths[code] = widths[ACCENT_BASE[code]];
+  }
+  return widths;
+}
+var WIDTHS = {
+  "Helvetica": buildTable(ASCII_REGULAR, SPECIAL_REGULAR),
+  "Helvetica-Bold": buildTable(ASCII_BOLD, SPECIAL_BOLD)
+};
+function glyphWidth(font, byte) {
+  var _a;
+  const w = (_a = WIDTHS[font][byte]) != null ? _a : 0;
+  return w === 0 ? WIDTHS[font][32] : w;
+}
+function measureBytes(font, bytes, size) {
+  let total = 0;
+  for (const byte of bytes) total += glyphWidth(font, byte);
+  return total * size / 1e3;
+}
+function widthsArray(font) {
+  return WIDTHS[font].slice(32, 256);
+}
+
+// src/pdf/winAnsi.ts
+var HIGH_SPECIALS = [
+  [128, 8364],
+  [130, 8218],
+  [131, 402],
+  [132, 8222],
+  [133, 8230],
+  [134, 8224],
+  [135, 8225],
+  [136, 710],
+  [137, 8240],
+  [138, 352],
+  [139, 8249],
+  [140, 338],
+  [142, 381],
+  [145, 8216],
+  [146, 8217],
+  [147, 8220],
+  [148, 8221],
+  [149, 8226],
+  [150, 8211],
+  [151, 8212],
+  [152, 732],
+  [153, 8482],
+  [154, 353],
+  [155, 8250],
+  [156, 339],
+  [158, 382],
+  [159, 376]
+];
+var UNICODE_TO_BYTE = /* @__PURE__ */ new Map();
+var BYTE_TO_UNICODE = /* @__PURE__ */ new Map();
+for (let code = 32; code <= 126; code++) {
+  UNICODE_TO_BYTE.set(code, code);
+  BYTE_TO_UNICODE.set(code, code);
+}
+for (let code = 160; code <= 255; code++) {
+  UNICODE_TO_BYTE.set(code, code);
+  BYTE_TO_UNICODE.set(code, code);
+}
+for (const [byte, unicode] of HIGH_SPECIALS) {
+  UNICODE_TO_BYTE.set(unicode, byte);
+  BYTE_TO_UNICODE.set(byte, unicode);
+}
+UNICODE_TO_BYTE.set(160, 32);
+UNICODE_TO_BYTE.set(173, 45);
+function toWinAnsiByte(codePoint) {
+  var _a;
+  return (_a = UNICODE_TO_BYTE.get(codePoint)) != null ? _a : null;
+}
+function fromWinAnsiByte(byte) {
+  var _a;
+  return (_a = BYTE_TO_UNICODE.get(byte)) != null ? _a : null;
+}
+function definedBytes() {
+  return Array.from(BYTE_TO_UNICODE.keys()).sort((a, b) => a - b);
+}
+function encodeWinAnsi(text) {
+  const bytes = [];
+  const unsupported = [];
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (cp === void 0) continue;
+    if (ch === "\n" || ch === "\r" || ch === "	") {
+      bytes.push(32);
+      continue;
+    }
+    const byte = toWinAnsiByte(cp);
+    if (byte === null) {
+      if (!unsupported.includes(ch)) unsupported.push(ch);
+      continue;
+    }
+    bytes.push(byte);
+  }
+  return { bytes, unsupported };
+}
+function unsupportedCharacters(text) {
+  return encodeWinAnsi(text).unsupported;
+}
+
+// src/pdf/pdfWriter.ts
+var PAGE_SIZES = {
+  A4: { width: 595.28, height: 841.89 },
+  Letter: { width: 612, height: 792 }
+};
+function num(value) {
+  if (!Number.isFinite(value)) {
+    throw new Error(`Refusing to write a non-finite number (${value}) into a PDF.`);
+  }
+  if (Math.abs(value) >= 1e15) {
+    throw new Error(`Refusing to write an out-of-range number (${value}) into a PDF.`);
+  }
+  const rounded = Math.round(value * 1e3) / 1e3;
+  if (Number.isInteger(rounded)) return rounded.toFixed(0);
+  return rounded.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+function literalString(bytes) {
+  let out = "(";
+  for (const byte of bytes) {
+    if (byte === 40) out += "\\(";
+    else if (byte === 41) out += "\\)";
+    else if (byte === 92) out += "\\\\";
+    else if (byte < 32 || byte > 126) out += "\\" + byte.toString(8).padStart(3, "0");
+    else out += String.fromCharCode(byte);
+  }
+  return out + ")";
+}
+function textString(value) {
+  let out = "<FEFF";
+  for (let i = 0; i < value.length; i++) {
+    out += value.charCodeAt(i).toString(16).toUpperCase().padStart(4, "0");
+  }
+  return out + ">";
+}
+function latin1Bytes(text) {
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code > 255) {
+      throw new Error(
+        `Internal error: a non-byte character (U+${code.toString(16).toUpperCase()}) reached the PDF serializer.`
+      );
+    }
+    out[i] = code;
+  }
+  return out;
+}
+var ContentStream = class {
+  constructor() {
+    this.ops = [];
+    this.unsupported = /* @__PURE__ */ new Set();
+  }
+  /** Characters encountered that WinAnsi cannot draw. */
+  unsupportedCharacters() {
+    return Array.from(this.unsupported);
+  }
+  /** Set the non-stroking colour (0–1 greyscale). */
+  grey(value) {
+    this.ops.push(`${num(value)} g`);
+    return this;
+  }
+  /** Filled rectangle — also how every rule and table border is drawn, which
+   * avoids depending on stroke width and dash state being in a known state. */
+  rect(x, y, width, height) {
+    this.ops.push(`${num(x)} ${num(y)} ${num(width)} ${num(height)} re f`);
+    return this;
+  }
+  /**
+   * Draw text with its baseline at (x, y).
+   * Uses `Tm` rather than `Td` so each run is positioned absolutely and a
+   * mistake in one run cannot shift every run after it.
+   */
+  text(fontRef, size, x, y, value) {
+    const { bytes, unsupported } = encodeWinAnsi(value);
+    for (const ch of unsupported) this.unsupported.add(ch);
+    if (bytes.length === 0) return this;
+    this.ops.push(
+      `BT /${fontRef} ${num(size)} Tf 1 0 0 1 ${num(x)} ${num(y)} Tm ${literalString(bytes)} Tj ET`
+    );
+    return this;
+  }
+  /** Right-align text so its last glyph ends at `right`. */
+  textRight(fontRef, font, size, right, y, value) {
+    const { bytes } = encodeWinAnsi(value);
+    const width = measureBytes(font, bytes, size);
+    return this.text(fontRef, size, right - width, y, value);
+  }
+  build() {
+    return this.ops.join("\n");
+  }
+};
+function pdfDate(date) {
+  const pad = (n, w = 2) => String(Math.abs(n)).padStart(w, "0");
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes === 0 ? "Z" : offsetMinutes > 0 ? "+" : "-";
+  const body = `D:${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  if (sign === "Z") return `${body}Z`;
+  return `${body}${sign}${pad(Math.floor(Math.abs(offsetMinutes) / 60))}'${pad(
+    Math.abs(offsetMinutes) % 60
+  )}'`;
+}
+function toUnicodeCMap() {
+  const codes = definedBytes();
+  const chunks = [];
+  for (let i = 0; i < codes.length; i += 100) {
+    const slice = codes.slice(i, i + 100);
+    const body = slice.map((byte) => {
+      var _a;
+      const unicode = (_a = fromWinAnsiByte(byte)) != null ? _a : 32;
+      return `<${byte.toString(16).padStart(2, "0")}> <${unicode.toString(16).padStart(4, "0")}>`;
+    }).join("\n");
+    chunks.push(`${slice.length} beginbfchar
+${body}
+endbfchar`);
+  }
+  return [
+    "/CIDInit /ProcSet findresource begin",
+    "12 dict begin",
+    "begincmap",
+    "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+    "/CMapName /Adobe-Identity-UCS def",
+    "/CMapType 2 def",
+    "1 begincodespacerange",
+    "<00> <ff>",
+    "endcodespacerange",
+    ...chunks,
+    "endcmap",
+    "CMapName currentdict /CMap defineresource pop",
+    "end",
+    "end"
+  ].join("\n");
+}
+function buildPdf(opts) {
+  const { pages, fonts, metadata } = opts;
+  if (pages.length === 0) throw new Error("Refusing to write a PDF with no pages.");
+  const objects = [];
+  const reserve = () => {
+    objects.push("");
+    return objects.length;
+  };
+  const put = (number, body) => {
+    objects[number - 1] = body;
+  };
+  const catalogNo = reserve();
+  const pagesNo = reserve();
+  const toUnicodeNo = reserve();
+  const fontNos = fonts.map(() => reserve());
+  const widthsNos = fonts.map(() => reserve());
+  const pageNos = pages.map(() => reserve());
+  const contentNos = pages.map(() => reserve());
+  const infoNo = reserve();
+  const cmap = toUnicodeCMap();
+  put(
+    toUnicodeNo,
+    `<< /Length ${latin1Bytes(cmap).length} >>
+stream
+${cmap}
+endstream`
+  );
+  fonts.forEach((font, i) => {
+    put(widthsNos[i], `[ ${widthsArray(font.base).map((w) => String(w)).join(" ")} ]`);
+    put(
+      fontNos[i],
+      `<< /Type /Font /Subtype /Type1 /BaseFont /${font.base} /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 255 /Widths ${widthsNos[i]} 0 R /ToUnicode ${toUnicodeNo} 0 R >>`
+    );
+  });
+  const fontResources = fonts.map((font, i) => `/${font.ref} ${fontNos[i]} 0 R`).join(" ");
+  pages.forEach((page, i) => {
+    const unsupported = page.content.unsupportedCharacters();
+    if (unsupported.length > 0) {
+      throw new Error(
+        `This invoice contains characters the PDF font cannot draw: ${unsupported.join(" ")}`
+      );
+    }
+    const body = page.content.build();
+    put(contentNos[i], `<< /Length ${latin1Bytes(body).length} >>
+stream
+${body}
+endstream`);
+    put(
+      pageNos[i],
+      `<< /Type /Page /Parent ${pagesNo} 0 R /MediaBox [0 0 ${num(page.width)} ${num(page.height)}] /Resources << /Font << ${fontResources} >> /ProcSet [/PDF /Text] >> /Contents ${contentNos[i]} 0 R >>`
+    );
+  });
+  put(
+    pagesNo,
+    `<< /Type /Pages /Count ${pages.length} /Kids [ ${pageNos.map((n) => `${n} 0 R`).join(" ")} ] >>`
+  );
+  put(catalogNo, `<< /Type /Catalog /Pages ${pagesNo} 0 R >>`);
+  put(
+    infoNo,
+    `<< /Title ${textString(metadata.title)} /Author ${textString(metadata.author)} /Creator ${textString(metadata.creator)} /Producer ${textString(metadata.creator)} /CreationDate (${pdfDate(metadata.created)}) >>`
+  );
+  const chunks = [];
+  let offset = 0;
+  const push = (bytes) => {
+    chunks.push(bytes);
+    offset += bytes.length;
+  };
+  const pushText = (text) => push(latin1Bytes(text));
+  pushText("%PDF-1.4\n");
+  push(new Uint8Array([37, 226, 227, 207, 211, 10]));
+  const offsets = new Array(objects.length).fill(0);
+  objects.forEach((body, i) => {
+    const number = i + 1;
+    offsets[i] = offset;
+    pushText(`${number} 0 obj
+${body}
+endobj
+`);
+  });
+  const xrefOffset = offset;
+  const xrefLines = [`xref
+0 ${objects.length + 1}
+`, "0000000000 65535 f\r\n"];
+  for (const objOffset of offsets) {
+    xrefLines.push(`${String(objOffset).padStart(10, "0")} 00000 n\r
+`);
+  }
+  pushText(xrefLines.join(""));
+  pushText(
+    `trailer
+<< /Size ${objects.length + 1} /Root ${catalogNo} 0 R /Info ${infoNo} 0 R >>
+startxref
+${xrefOffset}
+%%EOF
+`
+  );
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let cursor = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, cursor);
+    cursor += chunk.length;
+  }
+  return out;
+}
+
+// src/pdf/invoicePdf.ts
+var REGULAR = "Helvetica";
+var BOLD = "Helvetica-Bold";
+var F_REGULAR = "F1";
+var F_BOLD = "F2";
+var MARGIN = 56;
+var FOOTER_SPACE = 48;
+var ROW_PAD = 6;
+var LINE_HEIGHT = 13;
+var BODY_SIZE = 9.5;
+var SMALL_SIZE = 8;
+function layoutFor(size) {
+  const { width, height } = PAGE_SIZES[size];
+  const contentRight = width - MARGIN;
+  const amount = { left: contentRight - 96, right: contentRight };
+  const rate = { left: amount.left - 86, right: amount.left - 10 };
+  const hours = { left: rate.left - 62, right: rate.left - 10 };
+  const description = { left: MARGIN, right: hours.left - 10 };
+  return { width, height, description, hours, rate, amount };
+}
+function wrapText(font, size, maxWidth, text) {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [""];
+  const measure = (s) => measureBytes(font, encodeWinAnsi(s).bytes, size);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (measure(candidate) <= maxWidth || current === "") {
+      if (measure(candidate) <= maxWidth) {
+        current = candidate;
+        continue;
+      }
+      let chunk = "";
+      for (const ch of word) {
+        if (measure(chunk + ch) > maxWidth && chunk !== "") {
+          lines.push(chunk);
+          chunk = ch;
+        } else {
+          chunk += ch;
+        }
+      }
+      current = chunk;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+function textFields(doc) {
+  const fields = [
+    { label: "invoice number", value: doc.number },
+    { label: "client name", value: doc.client },
+    { label: "business name", value: doc.businessName },
+    { label: "business address", value: doc.businessAddress },
+    { label: "business email", value: doc.businessEmail },
+    { label: "payment terms", value: doc.paymentTerms },
+    { label: "currency", value: doc.currency }
+  ];
+  for (const line of doc.lines) {
+    fields.push({ label: `line item "${line.description}"`, value: line.description });
+  }
+  return fields;
+}
+function findUnsupported(doc) {
+  const out = [];
+  for (const field of textFields(doc)) {
+    const chars = unsupportedCharacters(field.value);
+    if (chars.length > 0) out.push({ label: field.label, characters: chars });
+  }
+  return out;
+}
+function renderInvoicePdf(doc, opts) {
+  const unsupported = findUnsupported(doc);
+  if (unsupported.length > 0) {
+    const detail = unsupported.map((f) => `${f.label}: ${f.characters.join(" ")}`).join("; ");
+    throw new Error(
+      `PDF export cannot draw some characters in this invoice (${detail}). The Markdown invoice was written and contains them correctly.`
+    );
+  }
+  const L = layoutFor(opts.pageSize);
+  const pages = [];
+  const bottomLimit = MARGIN + FOOTER_SPACE;
+  const newPage = () => {
+    const page2 = { stream: new ContentStream(), y: L.height - MARGIN };
+    pages.push(page2);
+    return page2;
+  };
+  let page = newPage();
+  page.stream.grey(0).text(F_BOLD, 20, MARGIN, page.y - 14, "INVOICE");
+  page.stream.textRight(F_BOLD, BOLD, 11, L.amount.right, page.y - 14, doc.number);
+  page.y -= 34;
+  page.stream.grey(0.75).rect(MARGIN, page.y, L.amount.right - MARGIN, 0.8);
+  page.y -= 18;
+  const columnTop = page.y;
+  page.stream.grey(0.45).text(F_REGULAR, SMALL_SIZE, MARGIN, page.y, "FROM");
+  page.stream.grey(0.45).text(F_REGULAR, SMALL_SIZE, L.hours.left, page.y, "BILL TO");
+  let leftY = page.y - 14;
+  let rightY = page.y - 14;
+  const senderWidth = L.hours.left - MARGIN - 12;
+  page.stream.grey(0);
+  for (const nameLine of wrapText(BOLD, 10.5, senderWidth, doc.businessName)) {
+    page.stream.text(F_BOLD, 10.5, MARGIN, leftY, nameLine);
+    leftY -= LINE_HEIGHT;
+  }
+  for (const addressLine of doc.businessAddress.split(/[\r\n]+/)) {
+    if (!addressLine.trim()) continue;
+    for (const wrapped of wrapText(REGULAR, BODY_SIZE, senderWidth, addressLine.trim())) {
+      page.stream.text(F_REGULAR, BODY_SIZE, MARGIN, leftY, wrapped);
+      leftY -= LINE_HEIGHT;
+    }
+  }
+  if (doc.businessEmail) {
+    for (const wrapped of wrapText(REGULAR, BODY_SIZE, senderWidth, doc.businessEmail)) {
+      page.stream.text(F_REGULAR, BODY_SIZE, MARGIN, leftY, wrapped);
+      leftY -= LINE_HEIGHT;
+    }
+  }
+  for (const clientLine of wrapText(BOLD, 10.5, L.amount.right - L.hours.left, doc.client)) {
+    page.stream.text(F_BOLD, 10.5, L.hours.left, rightY, clientLine);
+    rightY -= LINE_HEIGHT;
+  }
+  page.stream.grey(0.35).text(F_REGULAR, BODY_SIZE, L.hours.left, rightY, `Issued ${doc.dateLabel}`);
+  rightY -= LINE_HEIGHT;
+  if (doc.periodLabel) {
+    page.stream.text(F_REGULAR, BODY_SIZE, L.hours.left, rightY, `Period ${doc.periodLabel}`);
+    rightY -= LINE_HEIGHT;
+  }
+  page.y = Math.min(leftY, rightY) - 16;
+  void columnTop;
+  const drawTableHeader = (target, continued) => {
+    target.stream.grey(0.93).rect(MARGIN, target.y - 4, L.amount.right - MARGIN, 18);
+    const baseline = target.y + 2;
+    target.stream.grey(0.25);
+    target.stream.text(
+      F_BOLD,
+      SMALL_SIZE,
+      L.description.left + 4,
+      baseline,
+      continued ? "DESCRIPTION (CONTINUED)" : "DESCRIPTION"
+    );
+    target.stream.textRight(F_BOLD, BOLD, SMALL_SIZE, L.hours.right, baseline, "HOURS");
+    target.stream.textRight(F_BOLD, BOLD, SMALL_SIZE, L.rate.right, baseline, "RATE");
+    target.stream.textRight(F_BOLD, BOLD, SMALL_SIZE, L.amount.right, baseline, "AMOUNT");
+    target.y -= 22;
+  };
+  drawTableHeader(page, false);
+  let carried = 0;
+  for (const line of doc.lines) {
+    const wrapped = wrapText(REGULAR, BODY_SIZE, L.description.right - L.description.left - 8, line.description);
+    const rowHeight = wrapped.length * LINE_HEIGHT + ROW_PAD;
+    if (page.y - rowHeight < bottomLimit) {
+      page.stream.grey(0.45).textRight(
+        F_REGULAR,
+        REGULAR,
+        SMALL_SIZE,
+        L.amount.right,
+        page.y - 2,
+        `Carried forward  ${formatMoney(carried, doc.currency)}`
+      );
+      page = newPage();
+      drawTableHeader(page, true);
+      page.stream.grey(0.45).text(
+        F_REGULAR,
+        SMALL_SIZE,
+        L.description.left + 4,
+        page.y + 4,
+        `Brought forward  ${formatMoney(carried, doc.currency)}`
+      );
+      page.y -= 14;
+    }
+    const baseline = page.y - LINE_HEIGHT + 4;
+    page.stream.grey(0);
+    wrapped.forEach((text, i) => {
+      page.stream.text(F_REGULAR, BODY_SIZE, L.description.left + 4, baseline - i * LINE_HEIGHT, text);
+    });
+    page.stream.textRight(F_REGULAR, REGULAR, BODY_SIZE, L.hours.right, baseline, formatHours(line.seconds));
+    page.stream.textRight(
+      F_REGULAR,
+      REGULAR,
+      BODY_SIZE,
+      L.rate.right,
+      baseline,
+      formatMoney(line.rateMinor, doc.currency)
+    );
+    page.stream.textRight(
+      F_REGULAR,
+      REGULAR,
+      BODY_SIZE,
+      L.amount.right,
+      baseline,
+      formatMoney(line.amountMinor, doc.currency)
+    );
+    page.y -= rowHeight;
+    page.stream.grey(0.88).rect(MARGIN, page.y + 2, L.amount.right - MARGIN, 0.5);
+    carried += line.amountMinor;
+  }
+  const totalsHeight = 70 + (doc.paymentTerms.trim() ? LINE_HEIGHT : 0);
+  if (page.y - totalsHeight < bottomLimit) {
+    page = newPage();
+  }
+  page.y -= 10;
+  page.stream.grey(0).text(F_BOLD, BODY_SIZE, L.description.left + 4, page.y, "Total");
+  page.stream.textRight(F_BOLD, BOLD, BODY_SIZE, L.hours.right, page.y, formatHours(doc.totalSeconds));
+  page.stream.textRight(
+    F_BOLD,
+    BOLD,
+    BODY_SIZE,
+    L.amount.right,
+    page.y,
+    formatMoney(doc.totalMinor, doc.currency)
+  );
+  page.y -= 16;
+  page.stream.grey(0.15).rect(L.hours.left, page.y + 4, L.amount.right - L.hours.left, 0.9);
+  page.y -= 22;
+  page.stream.grey(0).text(F_BOLD, 12, L.hours.left, page.y, "Amount due");
+  page.stream.textRight(F_BOLD, BOLD, 12, L.amount.right, page.y, formatMoney(doc.totalMinor, doc.currency));
+  page.y -= 20;
+  if (doc.paymentTerms.trim()) {
+    for (const termsLine of wrapText(REGULAR, BODY_SIZE, L.amount.right - MARGIN, doc.paymentTerms.trim())) {
+      if (page.y < bottomLimit) page = newPage();
+      page.stream.grey(0.3).text(F_REGULAR, BODY_SIZE, MARGIN, page.y, termsLine);
+      page.y -= LINE_HEIGHT;
+    }
+  }
+  if (doc.notes.length > 0) {
+    page.y -= 8;
+    for (const note of doc.notes) {
+      for (const noteLine of wrapText(REGULAR, SMALL_SIZE, L.amount.right - MARGIN - 10, note)) {
+        if (page.y < bottomLimit) page = newPage();
+        page.stream.grey(0.5).text(F_REGULAR, SMALL_SIZE, MARGIN + 10, page.y, noteLine);
+        page.y -= 11;
+      }
+      page.y -= 3;
+    }
+  }
+  pages.forEach((p, i) => {
+    p.stream.grey(0.55).text(
+      F_REGULAR,
+      SMALL_SIZE,
+      MARGIN,
+      MARGIN - 10,
+      `Invoice ${doc.number} \u2014 ${doc.client}`
+    );
+    p.stream.textRight(
+      F_REGULAR,
+      REGULAR,
+      SMALL_SIZE,
+      L.amount.right,
+      MARGIN - 10,
+      `Page ${i + 1} of ${pages.length}`
+    );
+  });
+  const pdfPages = pages.map((p) => ({
+    width: L.width,
+    height: L.height,
+    content: p.stream
+  }));
+  return buildPdf({
+    pages: pdfPages,
+    fonts: [
+      { ref: F_REGULAR, base: REGULAR },
+      { ref: F_BOLD, base: BOLD }
+    ],
+    metadata: {
+      title: `Invoice ${doc.number} \u2014 ${doc.client}`,
+      author: doc.businessName,
+      creator: opts.creator,
+      created: opts.createdAt
+    }
+  });
+}
+
+// src/invoice.ts
+var InvoiceWriter = class {
   constructor(app, settings) {
     this.app = app;
     this.settings = settings;
   }
-  /** Round hours per the configured granularity. */
-  roundHours(hours) {
-    const step = this.settings.roundHoursTo;
-    if (!step || step <= 0) return Math.round(hours * 100) / 100;
-    return Math.round(hours / step) * step;
-  }
-  money(amount) {
-    return `${this.settings.currency} ${amount.toFixed(2)}`;
-  }
-  /** Build invoice line items (one per project) for a client aggregate. */
-  buildLineItems(agg, rate) {
-    const items = [];
-    for (const [project, rawHours] of agg.byProject) {
-      const hours = this.roundHours(rawHours);
-      items.push({
-        description: project || "General",
-        hours,
-        rate,
-        amount: Math.round(hours * rate * 100) / 100
-      });
+  /**
+   * The next free invoice number, starting from the stored sequence.
+   * Skips any number already used by a record or already present on disk, so
+   * a restored backup or a hand-made file can never be overwritten.
+   */
+  nextNumber(issuedAt, existing, client) {
+    const year = new Date(issuedAt).getFullYear();
+    const used = new Set(existing.map((i) => i.number));
+    let seq = Math.max(1, Math.floor(this.settings.invoiceSeq));
+    for (let attempt = 0; attempt < 1e4; attempt++) {
+      const number = `${year}-${String(seq).padStart(4, "0")}`;
+      if (!used.has(number) && !this.pathExists(this.markdownPathFor(number, client))) {
+        return { number, seq };
+      }
+      seq += 1;
     }
-    return items.sort((a, b) => b.amount - a.amount);
+    throw new Error("Could not find an unused invoice number. Check the invoice folder.");
   }
-  /** Render a markdown invoice. `invoiceNumber` and `dateLabel` are passed in. */
-  renderMarkdown(opts) {
-    const { client, items, invoiceNumber, dateLabel } = opts;
-    const subtotal = items.reduce((s2, i) => s2 + i.amount, 0);
-    const totalHours = items.reduce((s2, i) => s2 + i.hours, 0);
-    const s = this.settings;
-    const lines = [];
-    lines.push("---");
-    lines.push(`invoice: "${invoiceNumber}"`);
-    lines.push(`client: "${client}"`);
-    lines.push(`date: "${dateLabel}"`);
-    lines.push(`total: ${subtotal.toFixed(2)}`);
-    lines.push(`currency: "${s.currency}"`);
-    lines.push("---");
-    lines.push("");
-    lines.push(`# Invoice ${invoiceNumber}`);
-    lines.push("");
-    lines.push(`**From:** ${s.businessName}`);
-    if (s.businessAddress) lines.push(`${s.businessAddress}`);
-    if (s.businessEmail) lines.push(`${s.businessEmail}`);
-    lines.push("");
-    lines.push(`**Bill to:** ${client}`);
-    lines.push("");
-    lines.push(`**Date:** ${dateLabel}`);
-    lines.push("");
-    lines.push("| Description | Hours | Rate | Amount |");
-    lines.push("| --- | ---: | ---: | ---: |");
-    for (const i of items) {
-      lines.push(
-        `| ${i.description} | ${i.hours.toFixed(2)} | ${this.money(i.rate)} | ${this.money(i.amount)} |`
-      );
-    }
-    lines.push(`| **Total** | **${totalHours.toFixed(2)}** | | **${this.money(subtotal)}** |`);
-    lines.push("");
-    lines.push(`**Amount due: ${this.money(subtotal)}**`);
-    lines.push("");
-    return lines.join("\n");
+  markdownPathFor(number, client) {
+    const folder = (0, import_obsidian.normalizePath)(this.settings.invoiceFolder || "Invoices");
+    const name = fileNameComponent(`Invoice ${number} - ${client}`, `Invoice ${number}`);
+    return (0, import_obsidian.normalizePath)(`${folder}/${name}.md`);
+  }
+  pdfPathFor(markdownPath) {
+    return markdownPath.replace(/\.md$/, ".pdf");
+  }
+  pathExists(path) {
+    return this.app.vault.getAbstractFileByPath(path) !== null;
   }
   /**
-   * Generate an invoice file for a client and write it into the vault.
-   * Returns the created TFile.
+   * Write the Markdown invoice, and the PDF when enabled.
+   *
+   * The Markdown is written first and is the source of record: if PDF
+   * rendering refuses (a client name outside the font's encoding, say), the
+   * invoice still exists and the reason is returned rather than thrown away.
    */
-  async generateForClient(opts) {
-    const { store, client, rate, invoiceNumber, dateLabel } = opts;
-    const aggs = store.aggregateByClient({ client });
-    if (aggs.length === 0 || aggs[0].totalHours === 0) {
-      new import_obsidian.Notice(`No tracked time found for "${client}".`);
-      return null;
-    }
-    const items = this.buildLineItems(aggs[0], rate);
-    const md = this.renderMarkdown({ client, items, invoiceNumber, dateLabel });
+  async write(doc, opts) {
     const folder = (0, import_obsidian.normalizePath)(this.settings.invoiceFolder || "Invoices");
     await this.ensureFolder(folder);
-    const safeClient = client.replace(/[\\/:*?"<>|]/g, "-");
-    const path = (0, import_obsidian.normalizePath)(`${folder}/Invoice ${invoiceNumber} - ${safeClient}.md`);
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof import_obsidian.TFile) {
-      await this.app.vault.modify(existing, md);
-      return existing;
+    const markdownPath = this.markdownPathFor(doc.number, doc.client);
+    if (this.pathExists(markdownPath)) {
+      throw new Error(`"${markdownPath}" already exists. Nothing was overwritten.`);
     }
-    return await this.app.vault.create(path, md);
-  }
-  async ensureFolder(folder) {
-    const existing = this.app.vault.getAbstractFileByPath(folder);
-    if (existing) return;
+    await this.app.vault.create(markdownPath, renderInvoiceMarkdown(doc));
+    if (!opts.exportPdf) {
+      return { markdownPath, pdfPath: null, pdfError: null };
+    }
+    const pdfPath = this.pdfPathFor(markdownPath);
+    if (this.pathExists(pdfPath)) {
+      return {
+        markdownPath,
+        pdfPath: null,
+        pdfError: `"${pdfPath}" already exists, so no PDF was written.`
+      };
+    }
     try {
-      await this.app.vault.createFolder(folder);
-    } catch (e) {
+      const bytes = renderInvoicePdf(doc, {
+        pageSize: opts.pageSize,
+        createdAt: opts.createdAt,
+        creator: opts.creator
+      });
+      const buffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      );
+      await this.app.vault.createBinary(pdfPath, buffer);
+      return { markdownPath, pdfPath, pdfError: null };
+    } catch (error) {
+      return {
+        markdownPath,
+        pdfPath: null,
+        pdfError: error instanceof Error ? error.message : String(error)
+      };
     }
   }
-  /**
-   * PDF export STUB.
-   *
-   * TODO(pdf): Implement real PDF export. Options:
-   *   - Render the invoice note via Obsidian's built-in "Export to PDF"
-   *     (workspace command) once the note is open.
-   *   - Bundle a lightweight generator (e.g. jsPDF / pdfmake) and draw the
-   *     line items directly. Keep it fully local — no external API.
-   * For now we surface a Notice so the command is wired end-to-end.
-   */
-  async exportPdfStub(invoiceFile) {
-    new import_obsidian.Notice(
-      `PDF export is coming soon. Invoice saved as markdown: ${invoiceFile.path}
-Tip: open it and use Obsidian's "Export to PDF" in the meantime.`
-    );
+  /** Characters in this invoice the PDF font cannot draw, if any. */
+  static unsupportedForPdf(doc) {
+    return findUnsupported(doc).map((f) => `${f.label}: ${f.characters.join(" ")}`);
+  }
+  /** Create `folder` and any missing parents. */
+  async ensureFolder(folder) {
+    const segments = folder.split("/").filter(Boolean);
+    let path = "";
+    for (const segment of segments) {
+      path = path ? `${path}/${segment}` : segment;
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (existing instanceof import_obsidian.TFolder) continue;
+      if (existing instanceof import_obsidian.TFile) {
+        throw new Error(`"${path}" is a file, so invoices cannot be written there.`);
+      }
+      try {
+        await this.app.vault.createFolder(path);
+      } catch (error) {
+        if (!(this.app.vault.getAbstractFileByPath(path) instanceof import_obsidian.TFolder)) {
+          throw new Error(
+            `Could not create the invoice folder "${path}": ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    }
   }
 };
 
@@ -2572,82 +4078,114 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    if (this.plugin.isReadOnly()) {
+      const warning = containerEl.createDiv({ cls: "tti-readonly" });
+      warning.createEl("p", {
+        text: "This vault's time data was written by a newer version of this plugin. It is open read-only and nothing will be saved. Update the plugin to continue."
+      });
+    }
+    this.renderLicense(containerEl);
+    this.renderBilling(containerEl);
+    this.renderMapping(containerEl);
+    this.renderInvoicing(containerEl);
+    this.renderFeedback(containerEl);
+  }
+  // ------------------------------------------------------------------ license
+  renderLicense(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("License").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
-      (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
+    new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Verified offline \u2014 no account or server required. Checked when you leave the field.").addText((text) => {
+      text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey);
+      text.onChange((value) => {
         this.plugin.settings.licenseKey = value;
-        void this.plugin.refreshLicense().then(() => this.display());
-      })
-    );
+        this.plugin.requestSave();
+      });
+      text.inputEl.addEventListener("blur", () => {
+        this.plugin.refreshLicense();
+        void this.plugin.saveAll();
+        this.display();
+      });
+    });
     const status = containerEl.createDiv({ cls: "tti-license-status" });
     if (this.plugin.settings.isPro) {
-      status.createEl("p", {
-        text: `\u2705 Premium active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""} \u2014 invoicing & PDF export unlocked.`
-      });
+      const who = this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : "";
+      status.createEl("p", { text: `Premium active${who} \u2014 invoicing and PDF export unlocked.` });
     } else {
       status.createEl("p", {
-        text: "\u{1F513} Lite tier active. Time tracking is fully available; upgrade to unlock invoicing & PDF export."
+        text: "Lite tier active. Time tracking is fully available; invoicing and PDF export need a license."
       });
       const link = status.createEl("a", {
-        text: "Get Time Tracker & Invoicing premium",
+        text: "Get Time Tracker and Invoicing premium",
         href: this.plugin.settings.purchaseUrl
       });
       link.setAttr("target", "_blank");
+      link.setAttr("rel", "noopener");
     }
     new import_obsidian2.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for premium upgrades.").addText(
-      (text) => text.setPlaceholder("https://your-store.com/product").setValue(this.plugin.settings.purchaseUrl).onChange((value) => {
+      (text) => text.setPlaceholder(DEFAULT_SETTINGS.purchaseUrl).setValue(this.plugin.settings.purchaseUrl).onChange((value) => {
         this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
-        void this.plugin.saveAll();
+        this.plugin.requestSave();
       })
     );
+  }
+  // ------------------------------------------------------------------ billing
+  renderBilling(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Billing").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Default hourly rate").setDesc("Used for invoice line items.").addText(
+    new import_obsidian2.Setting(containerEl).setName("Default hourly rate").setDesc("Used for invoice line items. Snapshotted onto each invoice when it is issued.").addText(
       (t) => t.setValue(String(this.plugin.settings.defaultHourlyRate)).onChange((v) => {
-        const n = Number(v);
-        if (!isNaN(n) && n >= 0) {
+        const n = Number(v.trim().replace(",", "."));
+        if (Number.isFinite(n) && n >= 0) {
           this.plugin.settings.defaultHourlyRate = n;
-          void this.plugin.saveAll();
+          this.plugin.requestSave();
         }
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Currency").setDesc("Currency code or symbol shown on invoices (e.g. USD, EUR, \xA3).").addText(
+    new import_obsidian2.Setting(containerEl).setName("Currency").setDesc("Code or symbol shown on invoices (e.g. USD, EUR, GBP). Codes set the decimal places.").addText(
       (t) => t.setValue(this.plugin.settings.currency).onChange((v) => {
-        this.plugin.settings.currency = v.trim() || "USD";
-        void this.plugin.saveAll();
+        this.plugin.settings.currency = v.trim() || DEFAULT_SETTINGS.currency;
+        this.plugin.requestSave();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Round hours to").setDesc("Billing increment in hours (e.g. 0.25 = nearest 15 min, 0 = no rounding).").addText(
+    new import_obsidian2.Setting(containerEl).setName("Round hours to").setDesc(
+      "Billing increment in hours (0.25 = nearest 15 min, 0 = no rounding). Applied per line item. A short entry can round to zero; the invoice preview says so."
+    ).addText(
       (t) => t.setValue(String(this.plugin.settings.roundHoursTo)).onChange((v) => {
-        const n = Number(v);
-        if (!isNaN(n) && n >= 0) {
+        const n = Number(v.trim().replace(",", "."));
+        if (Number.isFinite(n) && n >= 0) {
           this.plugin.settings.roundHoursTo = n;
-          void this.plugin.saveAll();
+          this.plugin.requestSave();
         }
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Client & project mapping").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Client frontmatter property").setDesc("Note property read to tag tracked time with a client.").addText(
+  }
+  // ------------------------------------------------------------------ mapping
+  renderMapping(containerEl) {
+    new import_obsidian2.Setting(containerEl).setName("Client and project mapping").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Client property").setDesc("Note property read to tag tracked time with a client.").addText(
       (t) => t.setValue(this.plugin.settings.clientProperty).onChange((v) => {
-        this.plugin.settings.clientProperty = v.trim() || "client";
-        void this.plugin.saveAll();
+        this.plugin.settings.clientProperty = v.trim() || DEFAULT_SETTINGS.clientProperty;
+        this.plugin.requestSave();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Project frontmatter property").setDesc("Note property read to tag tracked time with a project.").addText(
+    new import_obsidian2.Setting(containerEl).setName("Project property").setDesc("Note property read to tag tracked time with a project.").addText(
       (t) => t.setValue(this.plugin.settings.projectProperty).onChange((v) => {
-        this.plugin.settings.projectProperty = v.trim() || "project";
-        void this.plugin.saveAll();
+        this.plugin.settings.projectProperty = v.trim() || DEFAULT_SETTINGS.projectProperty;
+        this.plugin.requestSave();
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Default client").setDesc("Used when a note has no client property.").addText(
       (t) => t.setValue(this.plugin.settings.defaultClient).onChange((v) => {
-        this.plugin.settings.defaultClient = v.trim() || "Unassigned";
-        void this.plugin.saveAll();
+        this.plugin.settings.defaultClient = v.trim() || DEFAULT_SETTINGS.defaultClient;
+        this.plugin.requestSave();
       })
     );
+  }
+  // ---------------------------------------------------------------- invoicing
+  renderInvoicing(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Invoicing (Premium)").setHeading();
+    const isPro = this.plugin.settings.isPro;
     const premium = (name, desc, render) => {
       const setting = new import_obsidian2.Setting(containerEl).setName(name).setDesc(desc);
-      if (!this.plugin.settings.isPro) {
+      if (!isPro) {
         setting.settingEl.addClass("tti-setting-locked");
         setting.descEl.appendText(" (Premium)");
         return;
@@ -2658,15 +4196,15 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
       s.addText(
         (t) => t.setValue(this.plugin.settings.businessName).onChange((v) => {
           this.plugin.settings.businessName = v;
-          void this.plugin.saveAll();
+          this.plugin.requestSave();
         })
       );
     });
-    premium("Business address", "Shown under your business name.", (s) => {
+    premium("Business address", "Shown under your business name. One line per line.", (s) => {
       s.addTextArea(
         (t) => t.setValue(this.plugin.settings.businessAddress).onChange((v) => {
           this.plugin.settings.businessAddress = v;
-          void this.plugin.saveAll();
+          this.plugin.requestSave();
         })
       );
     });
@@ -2674,18 +4212,74 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
       s.addText(
         (t) => t.setValue(this.plugin.settings.businessEmail).onChange((v) => {
           this.plugin.settings.businessEmail = v;
-          void this.plugin.saveAll();
+          this.plugin.requestSave();
         })
       );
     });
-    premium("Invoice folder", "Vault folder where generated invoices are saved.", (s) => {
+    premium("Payment terms", "Printed under the amount due. Leave empty to omit.", (s) => {
+      s.addTextArea(
+        (t) => t.setPlaceholder("Payment due within 14 days. Bank transfer to \u2026").setValue(this.plugin.settings.paymentTerms).onChange((v) => {
+          this.plugin.settings.paymentTerms = v;
+          this.plugin.requestSave();
+        })
+      );
+    });
+    premium("Invoice folder", "Vault folder where invoices are written.", (s) => {
       s.addText(
         (t) => t.setValue(this.plugin.settings.invoiceFolder).onChange((v) => {
-          this.plugin.settings.invoiceFolder = v.trim() || "Invoices";
-          void this.plugin.saveAll();
+          this.plugin.settings.invoiceFolder = v.trim() || DEFAULT_SETTINGS.invoiceFolder;
+          this.plugin.requestSave();
         })
       );
     });
+    premium("Export a PDF as well", "Write a PDF next to each Markdown invoice.", (s) => {
+      s.addToggle(
+        (t) => t.setValue(this.plugin.settings.exportPdf).onChange((v) => {
+          this.plugin.settings.exportPdf = v;
+          this.plugin.requestSave();
+        })
+      );
+    });
+    premium("PDF page size", "Paper size for the exported PDF.", (s) => {
+      s.addDropdown(
+        (d) => d.addOption("A4", "A4").addOption("Letter", "US Letter").setValue(this.plugin.settings.pdfPageSize).onChange((v) => {
+          this.plugin.settings.pdfPageSize = v === "Letter" ? "Letter" : "A4";
+          this.plugin.requestSave();
+        })
+      );
+    });
+    premium("Next invoice number", "The sequence used for the next invoice issued this year.", (s) => {
+      s.addText(
+        (t) => t.setValue(String(this.plugin.settings.invoiceSeq)).onChange((v) => {
+          const n = Math.floor(Number(v.trim()));
+          if (Number.isFinite(n) && n >= 1) {
+            this.plugin.settings.invoiceSeq = n;
+            this.plugin.requestSave();
+          }
+        })
+      );
+    });
+    if (isPro) {
+      this.renderInvoiceSummary(containerEl);
+    }
+  }
+  /** A short account of what has been issued, so the ledger is not invisible. */
+  renderInvoiceSummary(containerEl) {
+    var _a, _b;
+    const invoices = (_b = (_a = this.plugin.store) == null ? void 0 : _a.getInvoices()) != null ? _b : [];
+    const live = invoices.filter((i) => !i.voided);
+    const summary = containerEl.createDiv({ cls: "tti-invoice-summary" });
+    if (live.length === 0) {
+      summary.createEl("p", { text: "No invoices issued yet." });
+      return;
+    }
+    const totalSeconds = live.reduce((s, i) => s + i.totalSeconds, 0);
+    summary.createEl("p", {
+      text: `${live.length} invoice${live.length === 1 ? "" : "s"} issued, covering ${formatHours(totalSeconds)}h. Voided invoices return their hours to the billable pool.`
+    });
+  }
+  // ----------------------------------------------------------------- feedback
+  renderFeedback(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Feedback").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Bugs and feature requests").setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.").addButton(
       (button) => button.setButtonText("Report a bug").onClick(() => {
@@ -2693,32 +4287,457 @@ var TimeTrackerSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     ).addButton(
       (button) => button.setButtonText("Request a feature").onClick(() => {
-        window.open("https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement");
+        window.open(
+          "https://github.com/israerusan/time-tracker-invoicing/issues/new?labels=enhancement"
+        );
       })
     );
   }
 };
 
+// src/core/migrate.ts
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function finiteNumber(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+function plainString(v) {
+  return typeof v === "string" ? v : null;
+}
+function readEntry(raw) {
+  var _a, _b, _c, _d;
+  if (!isRecord(raw)) return null;
+  const start = finiteNumber(raw.start);
+  if (start === null || start <= 0) return null;
+  const endRaw = raw.end;
+  let end;
+  if (endRaw === null || endRaw === void 0) end = null;
+  else {
+    const n = finiteNumber(endRaw);
+    if (n === null) return null;
+    if (n < start) return null;
+    end = n;
+  }
+  const client = plainString(raw.client);
+  const project = plainString(raw.project);
+  if (client === null || project === null) return null;
+  return {
+    ...raw,
+    id: (_a = plainString(raw.id)) != null ? _a : "",
+    filePath: (_b = plainString(raw.filePath)) != null ? _b : "",
+    fileName: (_c = plainString(raw.fileName)) != null ? _c : "",
+    client,
+    project,
+    start,
+    end,
+    description: (_d = plainString(raw.description)) != null ? _d : void 0
+  };
+}
+function readActiveTimer(raw) {
+  var _a, _b, _c, _d, _e;
+  if (!isRecord(raw)) return null;
+  const start = finiteNumber(raw.start);
+  if (start === null || start <= 0) return null;
+  return {
+    entryId: (_a = plainString(raw.entryId)) != null ? _a : newEntryId(),
+    filePath: (_b = plainString(raw.filePath)) != null ? _b : "",
+    fileName: (_c = plainString(raw.fileName)) != null ? _c : "",
+    client: (_d = plainString(raw.client)) != null ? _d : DEFAULT_SETTINGS.defaultClient,
+    project: (_e = plainString(raw.project)) != null ? _e : "",
+    start
+  };
+}
+function readAllocation(raw) {
+  if (!isRecord(raw)) return null;
+  const entryId = plainString(raw.entryId);
+  const from = finiteNumber(raw.from);
+  const to = finiteNumber(raw.to);
+  if (!entryId || from === null || to === null || to <= from) return null;
+  return { entryId, from, to };
+}
+function allocationsFitEntries(allocations, entriesById) {
+  var _a;
+  const seenPerEntry = /* @__PURE__ */ new Map();
+  for (const alloc of allocations) {
+    const entry = entriesById.get(alloc.entryId);
+    if (!entry || entry.end === null) return false;
+    if (alloc.from < entry.start || alloc.to > entry.end) return false;
+    const list = (_a = seenPerEntry.get(alloc.entryId)) != null ? _a : [];
+    for (const other of list) {
+      if (alloc.from < other.to && other.from < alloc.to) return false;
+    }
+    list.push(alloc);
+    seenPerEntry.set(alloc.entryId, list);
+  }
+  return true;
+}
+function readInvoice(raw) {
+  var _a, _b, _c;
+  if (!isRecord(raw)) return null;
+  const id = plainString(raw.id);
+  const number = plainString(raw.number);
+  const client = plainString(raw.client);
+  const issuedAt = finiteNumber(raw.issuedAt);
+  const totalMinor = finiteNumber(raw.totalMinor);
+  const totalSeconds = finiteNumber(raw.totalSeconds);
+  if (!id || !number || client === null || issuedAt === null) return null;
+  if (totalMinor === null || totalSeconds === null) return null;
+  const allocations = [];
+  if (Array.isArray(raw.allocations)) {
+    for (const a of raw.allocations) {
+      const parsed = readAllocation(a);
+      if (!parsed) return null;
+      allocations.push(parsed);
+    }
+  }
+  return {
+    ...raw,
+    id,
+    number,
+    client,
+    issuedAt,
+    periodFrom: finiteNumber(raw.periodFrom),
+    periodTo: finiteNumber(raw.periodTo),
+    currency: (_a = plainString(raw.currency)) != null ? _a : DEFAULT_SETTINGS.currency,
+    rateMinor: (_b = finiteNumber(raw.rateMinor)) != null ? _b : 0,
+    roundHoursTo: (_c = finiteNumber(raw.roundHoursTo)) != null ? _c : 0,
+    allocations,
+    totalSeconds,
+    totalMinor,
+    markdownPath: plainString(raw.markdownPath),
+    pdfPath: plainString(raw.pdfPath),
+    voided: raw.voided === true
+  };
+}
+function readSettings(raw) {
+  const merged = { ...DEFAULT_SETTINGS };
+  if (!isRecord(raw)) return merged;
+  for (const key of Object.keys(DEFAULT_SETTINGS)) {
+    const value = raw[key];
+    if (value === void 0 || value === null) continue;
+    if (typeof value === typeof DEFAULT_SETTINGS[key]) {
+      merged[key] = value;
+    }
+  }
+  if (merged.pdfPageSize !== "A4" && merged.pdfPageSize !== "Letter") {
+    merged.pdfPageSize = DEFAULT_SETTINGS.pdfPageSize;
+  }
+  if (!Number.isFinite(merged.invoiceSeq) || merged.invoiceSeq < 1) {
+    merged.invoiceSeq = DEFAULT_SETTINGS.invoiceSeq;
+  }
+  return merged;
+}
+function migrate(raw, now) {
+  const report = {
+    fromSchema: 1,
+    toSchema: CURRENT_SCHEMA,
+    readOnly: false,
+    reassignedIds: [],
+    quarantined: 0,
+    changed: false,
+    notes: []
+  };
+  const root = isRecord(raw) ? raw : {};
+  const declared = finiteNumber(root.schemaVersion);
+  report.fromSchema = declared != null ? declared : 1;
+  if (report.fromSchema > CURRENT_SCHEMA) {
+    report.readOnly = true;
+    report.notes.push(
+      `This vault's time data was written by a newer version of the plugin (schema ${report.fromSchema}). It has been opened read-only so nothing is overwritten. Update the plugin to continue.`
+    );
+  }
+  const quarantined = Array.isArray(root.quarantined) ? [...root.quarantined] : [];
+  const entries = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  const rawEntries = Array.isArray(root.entries) ? root.entries : [];
+  if (!Array.isArray(root.entries) && root.entries !== void 0) {
+    report.notes.push("The stored entry list was not an array; it has been quarantined.");
+    quarantined.push(root.entries);
+    report.quarantined += 1;
+  }
+  for (const rawEntry of rawEntries) {
+    const entry = readEntry(rawEntry);
+    if (!entry) {
+      quarantined.push(rawEntry);
+      report.quarantined += 1;
+      report.changed = true;
+      continue;
+    }
+    if (!entry.id || seenIds.has(entry.id)) {
+      const fresh = newEntryId();
+      report.reassignedIds.push({ from: entry.id || null, to: fresh });
+      entry.id = fresh;
+      report.changed = true;
+    }
+    seenIds.add(entry.id);
+    entries.push(entry);
+  }
+  const invoices = [];
+  const seenInvoiceIds = /* @__PURE__ */ new Set();
+  const rawInvoices = Array.isArray(root.invoices) ? root.invoices : [];
+  const entriesById = new Map(entries.map((e) => [e.id, e]));
+  for (const rawInvoice of rawInvoices) {
+    const invoice = readInvoice(rawInvoice);
+    if (!invoice || seenInvoiceIds.has(invoice.id) || !allocationsFitEntries(invoice.allocations, entriesById)) {
+      quarantined.push(rawInvoice);
+      report.quarantined += 1;
+      report.changed = true;
+      continue;
+    }
+    seenInvoiceIds.add(invoice.id);
+    invoices.push(invoice);
+  }
+  let legacyUnknownBefore = finiteNumber(root.legacyUnknownBefore);
+  if (report.fromSchema < 2) {
+    report.changed = true;
+    if (entries.length > 0) {
+      legacyUnknownBefore = now;
+      report.notes.push(
+        `${entries.length} time ${entries.length === 1 ? "entry was" : "entries were"} recorded before this version started tracking which invoice billed them. Their billing status is unknown, so you will be asked to confirm before they are included on an invoice.`
+      );
+    }
+  }
+  const data = {
+    schemaVersion: report.readOnly ? report.fromSchema : CURRENT_SCHEMA,
+    settings: readSettings(root.settings),
+    entries,
+    activeTimer: readActiveTimer(root.activeTimer),
+    invoices,
+    legacyUnknownBefore,
+    quarantined
+  };
+  if (report.quarantined > 0) {
+    report.notes.push(
+      `${report.quarantined} unreadable ${report.quarantined === 1 ? "record was" : "records were"} set aside rather than discarded. They are kept verbatim under "quarantined" in the plugin's data file.`
+    );
+  }
+  if (report.reassignedIds.length > 0) {
+    report.notes.push(
+      `${report.reassignedIds.length} time ${report.reassignedIds.length === 1 ? "entry" : "entries"} had a missing or duplicated identifier and were given a new one.`
+    );
+  }
+  return { data, report };
+}
+
+// src/ui/modals.ts
+var import_obsidian3 = require("obsidian");
+var ClientPickModal = class extends import_obsidian3.FuzzySuggestModal {
+  constructor(app, totals, onPick) {
+    super(app);
+    this.totals = totals;
+    this.onPick = onPick;
+    this.setPlaceholder("Select a client to invoice\u2026");
+  }
+  getItems() {
+    return this.totals;
+  }
+  getItemText(item) {
+    return `${item.client} \u2014 ${formatHours(item.unbilledSeconds)}h unbilled`;
+  }
+  onChooseItem(item) {
+    this.onPick(item.client);
+  }
+};
+var PeriodPickModal = class extends import_obsidian3.SuggestModal {
+  constructor(app, now, onPick) {
+    super(app);
+    this.now = now;
+    this.onPick = onPick;
+    this.setPlaceholder("Which period should this invoice cover?");
+  }
+  getSuggestions() {
+    const previous = previousMonthPeriod(this.now);
+    const current = monthPeriod(this.now);
+    return [
+      {
+        label: `Last month \u2014 ${previous.label}`,
+        description: periodRangeLabel(previous),
+        period: previous
+      },
+      {
+        label: `This month \u2014 ${current.label}`,
+        description: periodRangeLabel(current),
+        period: current
+      },
+      {
+        label: "All unbilled time",
+        description: "Every hour not already allocated to an invoice.",
+        period: null
+      },
+      {
+        label: "Custom range\u2026",
+        description: "Enter a start and end date.",
+        period: null,
+        custom: true
+      }
+    ];
+  }
+  renderSuggestion(choice, el) {
+    el.createDiv({ text: choice.label, cls: "tti-suggest-title" });
+    el.createDiv({ text: choice.description, cls: "tti-suggest-desc" });
+  }
+  onChooseSuggestion(choice) {
+    if (choice.custom) {
+      new CustomPeriodModal(this.app, this.now, this.onPick).open();
+      return;
+    }
+    this.onPick(choice.period);
+  }
+};
+var CustomPeriodModal = class extends import_obsidian3.Modal {
+  constructor(app, now, onPick) {
+    super(app);
+    this.onPick = onPick;
+    const month = monthPeriod(now);
+    this.fromValue = isoDate(month.from);
+    this.toValue = isoDate(month.to - 1);
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Custom billing period" });
+    new import_obsidian3.Setting(contentEl).setName("From").setDesc("First day billed (YYYY-MM-DD).").addText(
+      (t) => t.setValue(this.fromValue).onChange((v) => this.fromValue = v.trim())
+    );
+    new import_obsidian3.Setting(contentEl).setName("To").setDesc("Last day billed, inclusive.").addText(
+      (t) => t.setValue(this.toValue).onChange((v) => this.toValue = v.trim())
+    );
+    const error = contentEl.createDiv({ cls: "tti-error" });
+    new import_obsidian3.Setting(contentEl).addButton(
+      (b) => b.setButtonText("Use this period").setCta().onClick(() => {
+        const from = parseLocalDate(this.fromValue);
+        const toInclusive = parseLocalDate(this.toValue);
+        if (from === null || toInclusive === null) {
+          error.setText("Both dates must be in YYYY-MM-DD form.");
+          return;
+        }
+        const to = nextLocalMidnight(toInclusive);
+        if (to <= from) {
+          error.setText("The end date must not be before the start date.");
+          return;
+        }
+        this.close();
+        this.onPick({ from, to, label: `${isoDate(from)} to ${isoDate(to - 1)}` });
+      })
+    );
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var ConfirmInvoiceModal = class extends import_obsidian3.Modal {
+  constructor(app, draft, meta, onConfirm) {
+    super(app);
+    this.draft = draft;
+    this.meta = meta;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("tti-confirm");
+    contentEl.createEl("h3", { text: `Invoice ${this.meta.number} \u2014 ${this.meta.client}` });
+    contentEl.createEl("p", {
+      text: this.meta.periodLabel ? `Period ${this.meta.periodLabel}` : "All time not yet allocated to an invoice.",
+      cls: "tti-confirm-sub"
+    });
+    if (this.draft.lines.length === 0) {
+      contentEl.createEl("p", {
+        text: "There is nothing left to bill for this client in this period."
+      });
+      new import_obsidian3.Setting(contentEl).addButton((b) => b.setButtonText("Close").onClick(() => this.close()));
+      return;
+    }
+    if (this.draft.totalMinor <= 0) {
+      contentEl.createEl("p", {
+        text: "Every line rounds to zero hours at the current billing increment, so this invoice would be for nothing while marking the time as billed. Lower the rounding increment in settings, or track more time against this client first."
+      });
+      for (const warning of this.draft.warnings) {
+        contentEl.createDiv({ text: warning, cls: "tti-warning" });
+      }
+      new import_obsidian3.Setting(contentEl).addButton((b) => b.setButtonText("Close").onClick(() => this.close()));
+      return;
+    }
+    const table = contentEl.createEl("table", { cls: "tti-confirm-table" });
+    const head = table.createEl("thead").createEl("tr");
+    for (const label of ["Description", "Hours", "Amount"]) {
+      head.createEl("th", { text: label });
+    }
+    const body = table.createEl("tbody");
+    for (const line of this.draft.lines) {
+      const row = body.createEl("tr");
+      row.createEl("td", { text: line.description });
+      row.createEl("td", { text: formatHours(line.seconds) });
+      row.createEl("td", { text: formatMoney(line.amountMinor, this.meta.currency) });
+    }
+    const foot = table.createEl("tfoot").createEl("tr");
+    foot.createEl("th", { text: "Total" });
+    foot.createEl("th", { text: formatHours(this.draft.totalSeconds) });
+    foot.createEl("th", { text: formatMoney(this.draft.totalMinor, this.meta.currency) });
+    for (const warning of this.draft.warnings) {
+      contentEl.createDiv({ text: warning, cls: "tti-warning" });
+    }
+    new import_obsidian3.Setting(contentEl).addButton(
+      (b) => b.setButtonText("Issue invoice").setCta().onClick(() => {
+        this.close();
+        this.onConfirm();
+      })
+    ).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()));
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var InvoicePickModal = class extends import_obsidian3.FuzzySuggestModal {
+  constructor(app, items, onPick) {
+    super(app);
+    this.items = items;
+    this.onPick = onPick;
+    this.setPlaceholder("Select an invoice to void\u2026");
+  }
+  getItems() {
+    return this.items;
+  }
+  getItemText(item) {
+    return item.label;
+  }
+  onChooseItem(item) {
+    this.onPick(item.id);
+  }
+};
+
 // src/main.ts
-var TimeTrackerPlugin = class extends import_obsidian3.Plugin {
+var TICK_MS = 1e3;
+var SAVE_DEBOUNCE_MS = 400;
+var TimeTrackerPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
-    this.settings = DEFAULT_SETTINGS;
+    this.settings = { ...DEFAULT_SETTINGS };
     this.entries = [];
     this.activeTimer = null;
+    this.invoices = [];
+    this.legacyUnknownBefore = null;
+    this.quarantined = [];
+    /** Set when the data file came from a newer build; nothing is written. */
+    this.readOnly = false;
+    this.statusBarText = "";
+    this.tickHandle = null;
+    this.saveTimer = null;
+    /** Guards against two invoice confirmations racing. */
+    this.issuing = false;
+    /** Serializes writes so an older save cannot land after a newer one. */
+    this.saveChain = Promise.resolve();
   }
   async onload() {
     await this.loadAll();
-    await this.refreshLicense();
-    this.store = new TimeStore(this.entries, this.activeTimer, async () => {
+    this.refreshLicense();
+    this.store = new TimeStore(this.entries, this.activeTimer, this.invoices, async () => {
       this.activeTimer = this.store.getActiveTimer();
       await this.saveAll();
     });
     this.statusBar = this.addStatusBarItem();
     this.statusBar.addClass("tti-statusbar");
     this.statusBar.onClickEvent(() => this.toggleTracking());
-    this.updateStatusBar();
-    this.registerInterval(window.setInterval(() => this.updateStatusBar(), 1e3));
+    this.syncTicker();
     this.addCommand({
       id: "start-tracking",
       name: "Start tracking active note",
@@ -2735,6 +4754,15 @@ var TimeTrackerPlugin = class extends import_obsidian3.Plugin {
       callback: () => this.toggleTracking()
     });
     this.addCommand({
+      id: "discard-tracking",
+      name: "Discard running timer without recording it",
+      checkCallback: (checking) => {
+        if (!this.store.isRunning()) return false;
+        if (!checking) void this.discardTracking();
+        return true;
+      }
+    });
+    this.addCommand({
       id: "show-totals",
       name: "Show tracked time totals",
       callback: () => this.showTotals()
@@ -2744,25 +4772,47 @@ var TimeTrackerPlugin = class extends import_obsidian3.Plugin {
       name: "Generate invoice (Premium)",
       checkCallback: (checking) => {
         if (!this.settings.isPro) return false;
-        if (!checking) this.pickClientAndInvoice();
+        if (!checking) this.startInvoiceFlow();
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "void-invoice",
+      name: "Void an issued invoice (Premium)",
+      checkCallback: (checking) => {
+        if (!this.settings.isPro) return false;
+        if (!checking) this.startVoidFlow();
         return true;
       }
     });
     this.addCommand({
       id: "verify-license",
       name: "Verify license key",
-      callback: async () => {
-        await this.refreshLicense();
-        new import_obsidian3.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
+      callback: () => {
+        this.refreshLicense();
+        void this.saveAll();
+        new import_obsidian4.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
       }
     });
     this.addRibbonIcon("clock", "Time Tracker: start/stop", () => this.toggleTracking());
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof import_obsidian4.TFile) {
+          void this.store.retargetEntries(oldPath, file.path, file.basename);
+        }
+      })
+    );
     this.addSettingTab(new TimeTrackerSettingTab(this.app, this));
   }
   onunload() {
+    this.stopTicker();
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
   }
   // ----------------------------------------------------------------------
-  // Tracking (lite)
+  // Tracking
   // ----------------------------------------------------------------------
   deriveClientProject(file) {
     var _a, _b, _c;
@@ -2772,13 +4822,17 @@ var TimeTrackerPlugin = class extends import_obsidian3.Plugin {
     return { client, project };
   }
   async startTracking() {
+    if (this.readOnly) {
+      new import_obsidian4.Notice("Time data is open read-only \u2014 update the plugin before tracking more time.");
+      return;
+    }
     if (this.store.isRunning()) {
-      new import_obsidian3.Notice("Already tracking. Stop the current timer first.");
+      new import_obsidian4.Notice("Already tracking. Stop the current timer first.");
       return;
     }
     const file = this.app.workspace.getActiveFile();
     if (!file) {
-      new import_obsidian3.Notice("Open a note to track time against it.");
+      new import_obsidian4.Notice("Open a note to track time against it.");
       return;
     }
     const { client, project } = this.deriveClientProject(file);
@@ -2789,111 +4843,333 @@ var TimeTrackerPlugin = class extends import_obsidian3.Plugin {
       project,
       start: Date.now()
     });
-    new import_obsidian3.Notice(`\u25B6 Tracking "${file.basename}" \u2192 ${client} / ${project}`);
-    this.updateStatusBar();
+    new import_obsidian4.Notice(`Tracking "${file.basename}" \u2014 ${client} / ${project}`);
+    this.syncTicker();
   }
   async stopTracking() {
     if (!this.store.isRunning()) {
-      new import_obsidian3.Notice("No timer running.");
+      new import_obsidian4.Notice("No timer running.");
       return;
     }
     const entry = await this.store.stop(Date.now());
     if (entry) {
-      const hrs = TimeStore.entryHours(entry);
-      new import_obsidian3.Notice(`\u23F9 Stopped. Logged ${hrs.toFixed(2)}h to ${entry.client}.`);
+      new import_obsidian4.Notice(`Stopped. Logged ${formatHours(TimeStore.entrySeconds(entry))}h to ${entry.client}.`);
     }
-    this.updateStatusBar();
+    this.syncTicker();
+  }
+  async discardTracking() {
+    const active = this.store.getActiveTimer();
+    if (!active) return;
+    await this.store.cancel();
+    new import_obsidian4.Notice(`Discarded ${formatHours((Date.now() - active.start) / 1e3)}h \u2014 nothing was recorded.`);
+    this.syncTicker();
   }
   toggleTracking() {
     if (this.store.isRunning()) void this.stopTracking();
     else void this.startTracking();
   }
   showTotals() {
-    const aggs = this.store.aggregateByClient();
-    if (aggs.length === 0) {
-      new import_obsidian3.Notice("No tracked time yet.");
+    const totals = this.store.totalsByClient();
+    if (totals.length === 0) {
+      new import_obsidian4.Notice("No tracked time yet.");
       return;
     }
-    const lines = aggs.map((a) => `${a.client}: ${a.totalHours.toFixed(2)}h`);
-    new import_obsidian3.Notice("Tracked time by client:\n" + lines.join("\n"), 8e3);
+    const lines = totals.map(
+      (t) => `${t.client}: ${formatHours(t.unbilledSeconds)}h unbilled (${formatHours(t.totalSeconds)}h tracked)`
+    );
+    new import_obsidian4.Notice("Tracked time by client:\n" + lines.join("\n"), 8e3);
   }
   // ----------------------------------------------------------------------
   // Invoicing (premium)
   // ----------------------------------------------------------------------
-  pickClientAndInvoice() {
-    const clients = this.store.listClients();
-    if (clients.length === 0) {
-      new import_obsidian3.Notice("No tracked time to invoice yet.");
+  startInvoiceFlow() {
+    if (this.readOnly) {
+      new import_obsidian4.Notice("Time data is open read-only \u2014 update the plugin before issuing invoices.");
       return;
     }
-    new ClientPickModal(this.app, clients, (client) => void this.generateInvoice(client)).open();
+    const totals = this.store.totalsByClient();
+    if (totals.length === 0) {
+      new import_obsidian4.Notice("No tracked time to invoice yet.");
+      return;
+    }
+    new ClientPickModal(this.app, totals, (client) => {
+      new PeriodPickModal(this.app, Date.now(), (period) => {
+        this.previewInvoice(client, period);
+      }).open();
+    }).open();
   }
-  async generateInvoice(client) {
-    const gen = new InvoiceGenerator(this.app, this.settings);
-    const now = /* @__PURE__ */ new Date();
-    const dateLabel = now.toISOString().slice(0, 10);
-    const invoiceNumber = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${client.replace(/[^A-Za-z0-9]/g, "").slice(0, 6).toUpperCase() || "INV"}`;
-    const file = await gen.generateForClient({
-      store: this.store,
+  previewInvoice(client, period) {
+    const rateMinor = parseRateToMinor(this.settings.defaultHourlyRate, this.settings.currency);
+    if (rateMinor === null) {
+      new import_obsidian4.Notice("The default hourly rate is not a valid amount. Fix it in settings first.");
+      return;
+    }
+    const draft = buildDraft({
+      entries: this.store.getEntries(),
+      invoices: this.store.getInvoices(),
       client,
-      rate: this.settings.defaultHourlyRate,
-      invoiceNumber,
-      dateLabel
+      period,
+      rateMinor,
+      roundHoursTo: this.settings.roundHoursTo,
+      legacyUnknownBefore: this.legacyUnknownBefore
     });
-    if (!file) return;
-    await this.app.workspace.getLeaf(false).openFile(file);
-    new import_obsidian3.Notice(`Invoice generated for ${client}.`);
-    await gen.exportPdfStub(file);
+    const writer = new InvoiceWriter(this.app, this.settings);
+    let preview;
+    try {
+      preview = writer.nextNumber(Date.now(), this.store.getInvoices(), client);
+    } catch (error) {
+      new import_obsidian4.Notice(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    new ConfirmInvoiceModal(
+      this.app,
+      draft,
+      {
+        client,
+        number: preview.number,
+        currency: this.settings.currency,
+        periodLabel: period ? periodRangeLabel(period) : null
+      },
+      // The number shown above is a preview. It is claimed for real inside
+      // issueInvoice, against the ledger as it stands at that moment — two
+      // previews opened side by side would otherwise both show 0001 and both
+      // issue under it.
+      () => void this.issueInvoice({ client, period, rateMinor, writer })
+    ).open();
+  }
+  async issueInvoice(opts) {
+    const { client, period, rateMinor, writer } = opts;
+    if (this.issuing) {
+      new import_obsidian4.Notice("Another invoice is still being issued. Try again in a moment.");
+      return;
+    }
+    this.issuing = true;
+    try {
+      await this.issueInvoiceInner(client, period, rateMinor, writer);
+    } finally {
+      this.issuing = false;
+    }
+  }
+  async issueInvoiceInner(client, period, rateMinor, writer) {
+    var _a, _b;
+    const issuedAt = Date.now();
+    const draft = buildDraft({
+      entries: this.store.getEntries(),
+      invoices: this.store.getInvoices(),
+      client,
+      period,
+      rateMinor,
+      roundHoursTo: this.settings.roundHoursTo,
+      legacyUnknownBefore: this.legacyUnknownBefore
+    });
+    if (draft.lines.length === 0 || draft.totalMinor <= 0) {
+      new import_obsidian4.Notice("There is nothing left to bill for this client in this period.");
+      return;
+    }
+    let number;
+    let seq;
+    try {
+      ({ number, seq } = writer.nextNumber(issuedAt, this.store.getInvoices(), client));
+    } catch (error) {
+      new import_obsidian4.Notice(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    const doc = draftToDocument(draft, { number, client, issuedAt, period, settings: this.settings });
+    let written;
+    try {
+      written = await writer.write(doc, {
+        exportPdf: this.settings.exportPdf,
+        pageSize: this.settings.pdfPageSize,
+        createdAt: new Date(issuedAt),
+        creator: `Time Tracker and Invoicing ${this.manifest.version}`
+      });
+    } catch (error) {
+      new import_obsidian4.Notice(
+        `Invoice not created: ${error instanceof Error ? error.message : String(error)}`,
+        1e4
+      );
+      return;
+    }
+    const record = {
+      id: newInvoiceId(),
+      number,
+      client,
+      issuedAt,
+      periodFrom: (_a = period == null ? void 0 : period.from) != null ? _a : null,
+      periodTo: (_b = period == null ? void 0 : period.to) != null ? _b : null,
+      currency: this.settings.currency,
+      rateMinor,
+      roundHoursTo: this.settings.roundHoursTo,
+      allocations: draft.allocations,
+      totalSeconds: draft.totalSeconds,
+      totalMinor: draft.totalMinor,
+      markdownPath: written.markdownPath,
+      pdfPath: written.pdfPath,
+      voided: false
+    };
+    this.settings.invoiceSeq = seq + 1;
+    await this.store.addInvoice(record);
+    const file = this.app.vault.getAbstractFileByPath(written.markdownPath);
+    if (file instanceof import_obsidian4.TFile) {
+      await this.app.workspace.getLeaf(false).openFile(file);
+    }
+    if (written.pdfError) {
+      new import_obsidian4.Notice(
+        `Invoice ${number} created for ${client} (${formatMoney(draft.totalMinor, this.settings.currency)}). PDF was not written: ${written.pdfError}`,
+        12e3
+      );
+    } else if (written.pdfPath) {
+      new import_obsidian4.Notice(
+        `Invoice ${number} created for ${client} \u2014 ${formatMoney(draft.totalMinor, this.settings.currency)}. PDF saved to ${written.pdfPath}.`,
+        8e3
+      );
+    } else {
+      new import_obsidian4.Notice(
+        `Invoice ${number} created for ${client} \u2014 ${formatMoney(draft.totalMinor, this.settings.currency)}.`
+      );
+    }
+  }
+  startVoidFlow() {
+    const live = this.store.getInvoices().filter((i) => !i.voided);
+    if (live.length === 0) {
+      new import_obsidian4.Notice("No issued invoices to void.");
+      return;
+    }
+    const items = live.slice().sort((a, b) => b.issuedAt - a.issuedAt).map((invoice) => ({
+      id: invoice.id,
+      number: invoice.number,
+      client: invoice.client,
+      label: `${invoice.number} \u2014 ${invoice.client} \u2014 ${formatMoney(invoice.totalMinor, invoice.currency)}`
+    }));
+    new InvoicePickModal(this.app, items, (id) => {
+      void (async () => {
+        const voided = await this.store.voidInvoice(id);
+        new import_obsidian4.Notice(
+          voided ? "Invoice voided. Its hours are billable again; the invoice file was left untouched." : "That invoice could not be voided."
+        );
+      })();
+    }).open();
   }
   // ----------------------------------------------------------------------
   // License (offline Ed25519)
   // ----------------------------------------------------------------------
-  async refreshLicense() {
+  /** Pure: updates in-memory state only. Callers decide when to persist. */
+  refreshLicense() {
     var _a;
-    if (!this.settings.licenseKey) {
+    if (!this.settings.licenseKey.trim()) {
       this.settings.isPro = false;
       this.settings.licenseEmail = "";
-      await this.saveAll();
       return;
     }
     const result = LicenseManager.verify(this.settings.licenseKey);
     this.settings.isPro = result.valid;
     this.settings.licenseEmail = (_a = result.email) != null ? _a : "";
-    await this.saveAll();
   }
   // ----------------------------------------------------------------------
   // Status bar
   // ----------------------------------------------------------------------
+  /**
+   * Run the 1 Hz tick only while a timer is actually running.
+   *
+   * The previous version held an interval for the whole session and rewrote
+   * the same "Not tracking" string 86,400 times a day. On an idle vault this
+   * plugin now schedules nothing at all.
+   */
+  syncTicker() {
+    var _a;
+    this.updateStatusBar();
+    const shouldTick = ((_a = this.store) == null ? void 0 : _a.isRunning()) === true;
+    if (shouldTick && this.tickHandle === null) {
+      this.tickHandle = window.setInterval(() => this.updateStatusBar(), TICK_MS);
+      this.registerInterval(this.tickHandle);
+    } else if (!shouldTick) {
+      this.stopTicker();
+    }
+  }
+  stopTicker() {
+    if (this.tickHandle !== null) {
+      window.clearInterval(this.tickHandle);
+      this.tickHandle = null;
+    }
+  }
   updateStatusBar() {
     var _a;
     if (!this.statusBar) return;
     const active = (_a = this.store) == null ? void 0 : _a.getActiveTimer();
-    if (!active) {
-      this.statusBar.setText("\u23F1 Not tracking");
-      this.statusBar.removeClass("tti-tracking");
-      return;
+    const text = active ? `${formatDuration(Math.max(0, Date.now() - active.start))} \xB7 ${active.client}` : "Not tracking";
+    if (text !== this.statusBarText) {
+      this.statusBarText = text;
+      this.statusBar.setText(text);
     }
-    const ms = Math.max(0, Date.now() - active.start);
-    this.statusBar.setText(`\u23FA ${formatDuration(ms)} \xB7 ${active.client}`);
-    this.statusBar.addClass("tti-tracking");
+    this.statusBar.toggleClass("tti-tracking", active !== null);
   }
   // ----------------------------------------------------------------------
   // Persistence
   // ----------------------------------------------------------------------
   async loadAll() {
-    var _a, _b, _c;
     const raw = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, (_a = raw == null ? void 0 : raw.settings) != null ? _a : {});
-    this.entries = (_b = raw == null ? void 0 : raw.entries) != null ? _b : [];
-    this.activeTimer = (_c = raw == null ? void 0 : raw.activeTimer) != null ? _c : null;
+    const { data, report } = migrate(raw, Date.now());
+    this.settings = data.settings;
+    this.entries = data.entries;
+    this.activeTimer = data.activeTimer;
+    this.invoices = data.invoices;
+    this.legacyUnknownBefore = data.legacyUnknownBefore;
+    this.quarantined = data.quarantined;
+    this.readOnly = report.readOnly;
+    for (const note of report.notes) {
+      new import_obsidian4.Notice(note, 15e3);
+    }
   }
+  /** Coalesce rapid edits (settings typing) into a single write. */
+  requestSave() {
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => {
+      this.saveTimer = null;
+      void this.saveAll();
+    }, SAVE_DEBOUNCE_MS);
+  }
+  /**
+   * Persist the ledger.
+   *
+   * Every call is appended to a single chain. A rename burst, a settings blur
+   * and a timer stop can otherwise have three `saveData` calls in flight at
+   * once, and an older one completing last would write back stale state.
+   */
   async saveAll() {
+    if (this.readOnly) return;
+    if (this.saveTimer !== null) {
+      window.clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.saveChain = this.saveChain.then(
+      () => this.writeData(),
+      () => this.writeData()
+    );
+    return this.saveChain;
+  }
+  async writeData() {
     const data = {
+      schemaVersion: CURRENT_SCHEMA,
       settings: this.settings,
-      entries: this.store ? this.store.getEntries() : this.entries,
-      activeTimer: this.store ? this.store.getActiveTimer() : this.activeTimer
+      entries: this.store ? [...this.store.getEntries()] : this.entries,
+      activeTimer: this.store ? this.store.getActiveTimer() : this.activeTimer,
+      invoices: this.store ? [...this.store.getInvoices()] : this.invoices,
+      legacyUnknownBefore: this.legacyUnknownBefore,
+      quarantined: this.quarantined
     };
-    await this.saveData(data);
+    try {
+      await this.saveData(data);
+    } catch (error) {
+      new import_obsidian4.Notice(
+        `Time Tracker could not save your data: ${error instanceof Error ? error.message : String(error)}. Recent changes may be lost \u2014 check disk space and sync.`,
+        0
+      );
+      throw error;
+    }
+  }
+  /** True when the ledger came from a newer build and must not be written. */
+  isReadOnly() {
+    return this.readOnly;
   }
 };
 function formatDuration(ms) {
@@ -2903,20 +5179,3 @@ function formatDuration(ms) {
   const s = totalSec % 60;
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
-var ClientPickModal = class extends import_obsidian3.FuzzySuggestModal {
-  constructor(app, clients, onPick) {
-    super(app);
-    this.clients = clients;
-    this.onPick = onPick;
-    this.setPlaceholder("Select a client to invoice\u2026");
-  }
-  getItems() {
-    return this.clients;
-  }
-  getItemText(item) {
-    return item;
-  }
-  onChooseItem(item) {
-    this.onPick(item);
-  }
-};

@@ -22,7 +22,8 @@ Track billable time against your notes and projects, aggregate it by client, and
 | Client/project tagging via frontmatter | ✅ | ✅ |
 | Totals by client (command) | ✅ | ✅ |
 | **Invoice generation (markdown)** | — | ✅ |
-| **PDF export** | — | ✅ (stub today) |
+| **Billing periods, and never billing the same hour twice** | — | ✅ |
+| **PDF export** | — | ✅ |
 
 All **time tracking is free** — no trial, no expiry. **Invoicing and PDF export** are the only paid features, gated behind the license check (`LicenseManager.isPremium()`).
 
@@ -49,8 +50,34 @@ Purchase: [Buy Me a Coffee — Time Tracker & Invoicing Premium](https://buymeac
 - Aggregation also powers invoicing (totals broken down by project → invoice line items).
 
 ### Invoicing (premium)
-- **Generate invoice (Premium)** — pick a client; the plugin builds a markdown invoice (one line item per project, configurable rounding) and saves it to your invoice folder, with business details and totals.
-- **PDF export** is stubbed today (`exportPdfStub`) — it saves the markdown and points you to Obsidian's built-in *Export to PDF*. A real local PDF generator is left as a clean `TODO(pdf)`.
+
+- **Generate invoice** — pick a client, then a billing period (last month, this month, all unbilled
+  time, or a custom range). You see exactly what is about to be billed — every line, the hours, the
+  total — before anything is written.
+- **The same hour is never billed twice.** Each issued invoice records *which intervals* of each time
+  entry it billed, and a later invoice can only bill what is left. An entry that straddles midnight on
+  the first of the month is split at the boundary, so it bills once in each month and never twice
+  overall — and two invoices covering overlapping date ranges still cannot bill the overlap twice.
+- **Invoices are never overwritten.** Numbers are sequential (`2026-0001`), and if a file with that
+  name already exists the plugin picks the next free number rather than writing over a document you
+  may already have sent. A correction is a new invoice plus **Void an issued invoice**, which returns
+  those hours to the billable pool and leaves the original file untouched.
+- **PDF export** — a real PDF, generated locally, written next to the Markdown invoice. No network, no
+  external tool, and it works on mobile as well as desktop. A4 or US Letter; long invoices paginate with
+  a repeated table header and carried-forward totals.
+
+#### What the PDF can and cannot set
+
+The PDF is drawn with the standard PDF fonts (Helvetica), which every viewer already has. That is what
+keeps this feature a few kilobytes instead of the few hundred a bundled font engine would cost — a real
+consideration in a plugin that loads at startup and makes no network calls.
+
+The trade-off is the character set: **Latin-1 and the usual punctuation**. `Müller GmbH`, `Société
+Générale`, `Łukasz` and `£`/`€` all render exactly. A name in Japanese, Chinese, Greek, Cyrillic or
+Hebrew does not, and in that case **PDF export refuses and tells you which characters it cannot draw**.
+It will not transliterate or substitute them: a document that states a company's legal name and asks
+for money is the wrong place to quietly print a different name. The Markdown invoice has no such limit
+and is always written, so nothing is lost but the PDF.
 
 ---
 
@@ -59,15 +86,23 @@ Purchase: [Buy Me a Coffee — Time Tracker & Invoicing Premium](https://buymeac
 - **Start tracking active note** (Lite)
 - **Stop tracking** (Lite)
 - **Toggle tracking (start/stop)** (Lite)
-- **Show tracked time totals** (Lite)
+- **Discard running timer without recording it** (Lite)
+- **Show tracked time totals** (Lite) — shows unbilled hours as well as total tracked
 - **Generate invoice (Premium)**
+- **Void an issued invoice (Premium)**
 - **Verify license key**
 
 Plus a ribbon **clock** icon to toggle tracking.
 
 ## Settings
 
-Default hourly rate, currency, hours rounding, client/project frontmatter property names, and default client (all free). Business name/address/email and invoice folder are premium (invoice-only) and locked until licensed. License key lives under **License**.
+Default hourly rate, currency, hours rounding, client/project frontmatter property names, and default
+client (all free). Business name/address/email, payment terms, invoice folder, PDF export, PDF page
+size and the next invoice number are premium (invoice-only) and locked until licensed. License key
+lives under **License**.
+
+The currency setting accepts a code or a symbol. A code sets the decimal places correctly — `JPY`
+has none, `KWD` has three — and anything unrecognised is treated as two.
 
 > Keys are verified **offline with Ed25519 signatures** ([tweetnacl](https://www.npmjs.com/package/tweetnacl)) — no account, server, or network call, keeping the plugin 100% local. A key is `base64url(payload).base64url(signature)`, verified against the public key in `src/license/publicKey.ts`.
 
@@ -174,8 +209,22 @@ time-tracker-invoicing/
     │   ├── LicenseManager.ts  # offline Ed25519 verification
     │   └── publicKey.ts       # embedded public key
     ├── types/tweetnacl.d.ts   # minimal tweetnacl type shim
-    ├── timeStore.ts       # entries, active timer, aggregation
-    ├── invoice.ts         # invoice markdown generation + PDF stub (premium)
+    ├── timeStore.ts       # entries, active timer, issued invoices
+    ├── invoice.ts         # writing invoices into the vault (create-only)
+    ├── ui/modals.ts       # client / period pickers, invoice confirmation
+    ├── core/              # pure, no Obsidian imports — all of it unit-tested
+    │   ├── money.ts           # integer minor units, rounding, formatting
+    │   ├── period.ts          # billing periods, interval intersection
+    │   ├── invoiceModel.ts    # entries + invoices -> what is billable
+    │   ├── markdown.ts        # InvoiceDocument -> markdown
+    │   ├── migrate.ts         # schema-versioned, non-destructive migration
+    │   ├── text.ts            # YAML / table / file-name escaping
+    │   └── ids.ts             # collision-free identifiers
+    ├── pdf/               # pure, no Obsidian imports — a small PDF 1.4 writer
+    │   ├── pdfWriter.ts       # objects, xref, content streams, ToUnicode
+    │   ├── invoicePdf.ts      # InvoiceDocument -> pages
+    │   ├── fontMetrics.ts     # standard-14 glyph widths
+    │   └── winAnsi.ts         # encoding, and what it cannot represent
     └── types.ts           # shared interfaces & defaults
 ```
 
